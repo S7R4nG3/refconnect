@@ -173,7 +173,7 @@ func (c *Client) loop() {
 		}
 
 		c.setState(StateConnecting, "Connecting to ircDDB…")
-		addr := fmt.Sprintf("%s:%d", DefaultServer, DefaultPort)
+		addr := net.JoinHostPort(DefaultServer, fmt.Sprintf("%d", DefaultPort))
 		conn, err := net.DialTimeout("tcp", addr, dialTimeout)
 		if err != nil {
 			c.setState(StateError, err.Error())
