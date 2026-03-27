@@ -66,6 +66,9 @@ jobs:
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_512x512.png
           iconutil -c icns AppIcon.iconset -o RefConnect.app/Contents/Resources/AppIcon.icns
 
+      - name: Sign (ad-hoc)
+        run: codesign --force --deep --sign - RefConnect.app
+
       - name: Package
         run: zip -r RefConnect-macOS-arm64.zip RefConnect.app
 
@@ -113,6 +116,9 @@ jobs:
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_256x256@2x.png
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_512x512.png
           iconutil -c icns AppIcon.iconset -o RefConnect.app/Contents/Resources/AppIcon.icns
+
+      - name: Sign (ad-hoc)
+        run: codesign --force --deep --sign - RefConnect.app
 
       - name: Package
         run: zip -r RefConnect-macOS-amd64.zip RefConnect.app

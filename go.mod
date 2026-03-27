@@ -1,6 +1,6 @@
 module github.com/S7R4nG3/refconnect
 
-go 1.22
+go 1.26
 
 require (
 	fyne.io/fyne/v2 v2.5.1
