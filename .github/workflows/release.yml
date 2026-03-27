@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    name: Build Linux (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+
+      - name: Build
+        run: go build -ldflags="-s -w" -o refconnect .
+
+      - name: Package
+        run: tar -czf refconnect-linux-amd64.tar.gz refconnect
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refconnect-linux-amd64
+          path: refconnect-linux-amd64.tar.gz
+
+  build-macos:
+    name: Build macOS (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -ldflags="-s -w" -o refconnect .
+
+      - name: Bundle .app
+        run: |
+          mkdir -p RefConnect.app/Contents/MacOS
+          mkdir -p RefConnect.app/Contents/Resources
+          cp refconnect RefConnect.app/Contents/MacOS/
+          cp configs/Info.plist RefConnect.app/Contents/
+
+      - name: Generate AppIcon.icns
+        run: |
+          mkdir -p AppIcon.iconset
+          sips -z 16 16     docs/antenna.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     docs/antenna.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     docs/antenna.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     docs/antenna.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   docs/antenna.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   docs/antenna.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   docs/antenna.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_512x512.png
+          iconutil -c icns AppIcon.iconset --output RefConnect.app/Contents/Resources/AppIcon.icns
+
+      - name: Package
+        run: zip -r RefConnect-macOS-arm64.zip RefConnect.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RefConnect-macOS-arm64
+          path: RefConnect-macOS-arm64.zip
+
+  build-macos-amd64:
+    name: Build macOS (amd64)
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -ldflags="-s -w" -o refconnect .
+
+      - name: Bundle .app
+        run: |
+          mkdir -p RefConnect.app/Contents/MacOS
+          mkdir -p RefConnect.app/Contents/Resources
+          cp refconnect RefConnect.app/Contents/MacOS/
+          cp configs/Info.plist RefConnect.app/Contents/
+
+      - name: Generate AppIcon.icns
+        run: |
+          mkdir -p AppIcon.iconset
+          sips -z 16 16     docs/antenna.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32 32     docs/antenna.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32 32     docs/antenna.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64 64     docs/antenna.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128 128   docs/antenna.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256 256   docs/antenna.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256 256   docs/antenna.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_512x512.png
+          iconutil -c icns AppIcon.iconset --output RefConnect.app/Contents/Resources/AppIcon.icns
+
+      - name: Package
+        run: zip -r RefConnect-macOS-amd64.zip RefConnect.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RefConnect-macOS-amd64
+          path: RefConnect-macOS-amd64.zip
+
+  build-windows:
+    name: Build Windows (amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Add MinGW to PATH
+        shell: pwsh
+        run: echo "C:\msys64\mingw64\bin" | Out-File -Append -FilePath $env:GITHUB_PATH
+
+      - name: Embed icon into .exe
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          go-winres simply --icon docs/antenna.png --arch amd64
+
+      - name: Build
+        run: go build -ldflags="-s -w -H=windowsgui" -o refconnect.exe .
+
+      - name: Package
+        run: Compress-Archive -Path refconnect.exe -DestinationPath RefConnect-windows-amd64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RefConnect-windows-amd64
+          path: RefConnect-windows-amd64.zip
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-macos, build-macos-amd64, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

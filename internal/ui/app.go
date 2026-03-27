@@ -1,0 +1,306 @@
+// Package ui implements the Fyne-based graphical user interface.
+package ui
+
+import (
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/data/binding"
+	"fyne.io/fyne/v2/theme"
+
+	"github.com/S7R4nG3/refconnect/internal/config"
+	"github.com/S7R4nG3/refconnect/internal/ircddb"
+	"github.com/S7R4nG3/refconnect/internal/protocol"
+	"github.com/S7R4nG3/refconnect/internal/protocol/dextra"
+	"github.com/S7R4nG3/refconnect/internal/protocol/dplus"
+	"github.com/S7R4nG3/refconnect/internal/protocol/xlx"
+	"github.com/S7R4nG3/refconnect/internal/radio"
+	"github.com/S7R4nG3/refconnect/internal/router"
+)
+
+// App is the top-level application controller.
+type App struct {
+	fyneApp fyne.App
+	win     fyne.Window
+	cfg     *config.Config
+
+	radio     radio.RadioInterface
+	reflector protocol.Reflector
+	rt        *router.Router
+	irc       *ircddb.Client
+
+	// Shared data bindings updated from any goroutine, consumed by widgets.
+	statusText  binding.String
+	logLines    binding.StringList
+	rxActive    binding.Bool
+	txActive    binding.Bool
+	linkState   binding.String
+	lastHeard   binding.String
+}
+
+// Run initialises the application and blocks until the window is closed.
+func Run(cfg *config.Config) {
+	a := &App{
+		cfg:         cfg,
+		statusText:  binding.NewString(),
+		logLines:    binding.NewStringList(),
+		rxActive:    binding.NewBool(),
+		txActive:    binding.NewBool(),
+		linkState:   binding.NewString(),
+		lastHeard:   binding.NewString(),
+	}
+	a.statusText.Set("Disconnected") //nolint:errcheck
+	a.linkState.Set("Disconnected")  //nolint:errcheck
+
+	a.fyneApp = app.NewWithID("org.refconnect.refconnect")
+
+	// Apply theme preference.
+	switch cfg.UI.Theme {
+	case "dark":
+		a.fyneApp.Settings().SetTheme(theme.DarkTheme())
+	case "light":
+		a.fyneApp.Settings().SetTheme(theme.LightTheme())
+	// "system" uses the default auto-detect behaviour
+	}
+
+	a.win = a.fyneApp.NewWindow("RefConnect — D-STAR Reflector Client")
+	a.win.SetContent(buildMainWindow(a))
+	// Resize must be called after SetContent so Fyne can reconcile the
+	// requested size against the content's minimum size.
+	a.win.Resize(fyne.NewSize(cfg.UI.WindowWidth, cfg.UI.WindowHeight))
+	a.win.SetMaster()
+	a.win.SetOnClosed(func() {
+		a.shutdown()
+	})
+
+	a.win.ShowAndRun()
+}
+
+// appendLog adds a timestamped line to the log binding (safe from any goroutine).
+func (a *App) appendLog(msg string) {
+	line := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg)
+	lines, _ := a.logLines.Get()
+	maxLines := a.cfg.UI.LogMaxLines
+	if maxLines <= 0 {
+		maxLines = 500
+	}
+	if len(lines) >= maxLines {
+		lines = lines[len(lines)-maxLines+1:]
+	}
+	lines = append(lines, line)
+	a.logLines.Set(lines) //nolint:errcheck
+}
+
+// connect establishes a reflector link using the current UI settings.
+func (a *App) connect(entry config.ReflectorEntry) {
+	var ref protocol.Reflector
+	switch protocol.Protocol(entry.Protocol) {
+	case protocol.ProtoDExtra:
+		ref = dextra.New()
+	case protocol.ProtoDPlus:
+		ref = dplus.New()
+	case protocol.ProtoXLX:
+		ref = xlx.New()
+	default:
+		a.appendLog("Unknown protocol: " + entry.Protocol)
+		return
+	}
+	a.reflector = ref
+
+	myCall := buildMyCall(a.cfg.Callsign, a.cfg.CallsignSuffix)
+
+	// Restart ircDDB if the callsign changed so the new callsign gets registered.
+	ircRestarted := false
+	if a.irc == nil || a.irc.Nick() != ircddb.New(myCall).Nick() {
+		if a.irc != nil {
+			a.irc.Stop()
+		}
+		a.irc = ircddb.New(myCall)
+		a.irc.Start()
+		ircRestarted = true
+		go func() {
+			for evt := range a.irc.Events() {
+				a.appendLog("ircDDB: " + evt.Message)
+			}
+		}()
+	}
+
+	cfg := protocol.Config{
+		Host:     entry.Host,
+		Port:     entry.Port,
+		Module:   entry.Module[0],
+		MyCall:   myCall,
+		Protocol: protocol.Protocol(entry.Protocol),
+	}
+
+	a.appendLog(fmt.Sprintf("Connecting to %s (%s:%d module %s) via %s…",
+		entry.Name, entry.Host, entry.Port, entry.Module, entry.Protocol))
+	a.linkState.Set("Connecting…") //nolint:errcheck
+
+	irc := a.irc
+	go func() {
+		if ircRestarted && irc != nil {
+			if !irc.WaitRegistered(30 * time.Second) {
+				log.Printf("connect: ircDDB did not register within 30s, proceeding anyway")
+			}
+		}
+		if err := ref.Connect(cfg); err != nil {
+			log.Printf("connect: failed to %s: %v", entry.Host, err)
+			a.appendLog("Connect failed: " + err.Error())
+			a.linkState.Set("Error: " + err.Error()) //nolint:errcheck
+			return
+		}
+		log.Printf("connect: linked to %s", entry.Host)
+		a.appendLog("Linked to " + entry.Name)
+		a.linkState.Set("Connected — " + entry.Name) //nolint:errcheck
+
+		// If a radio is already open, start routing.
+		if a.radio != nil && a.radio.IsOpen() {
+			a.startRouter()
+		}
+
+		// Forward reflector events to the log.
+		go func() {
+			for evt := range ref.Events() {
+				a.appendLog(evt.Message)
+				a.linkState.Set(evt.State.String()) //nolint:errcheck
+			}
+		}()
+	}()
+}
+
+// disconnect gracefully unlinks from the current reflector and de-registers from ircDDB.
+func (a *App) disconnect() {
+	if a.rt != nil {
+		a.rt.Stop()
+		a.rt = nil
+	}
+	if a.reflector != nil {
+		if err := a.reflector.Disconnect(); err != nil {
+			a.appendLog("Disconnect error: " + err.Error())
+		}
+		a.reflector = nil
+	}
+	if a.irc != nil {
+		a.irc.Stop()
+		a.irc = nil
+	}
+	a.linkState.Set("Disconnected") //nolint:errcheck
+	a.appendLog("Disconnected.")
+}
+
+// openRadio opens the serial port for the radio.
+func (a *App) openRadio(portName string) {
+	sr := radio.NewSerialRadio()
+	cfg := radio.Config{
+		Port:      portName,
+		BaudRate:  a.cfg.Radio.BaudRate,
+		DataBits:  a.cfg.Radio.DataBits,
+		PTTViaRTS: a.cfg.Radio.PTTViaRTS,
+	}
+	if err := sr.Open(cfg); err != nil {
+		a.appendLog("Radio open error: " + err.Error())
+		return
+	}
+	a.radio = sr
+	a.appendLog("Radio opened on " + portName)
+
+	if a.reflector != nil && a.reflector.State() == protocol.StateConnected {
+		a.startRouter()
+	}
+}
+
+// closeRadio releases the serial port.
+func (a *App) closeRadio() {
+	if a.rt != nil {
+		a.rt.Stop()
+		a.rt = nil
+	}
+	if a.radio != nil {
+		a.radio.Close() //nolint:errcheck
+		a.radio = nil
+		a.appendLog("Radio closed.")
+	}
+}
+
+// ptt asserts or releases PTT.
+func (a *App) ptt(on bool) {
+	if a.radio == nil || !a.radio.IsOpen() {
+		return
+	}
+	if err := a.radio.PTT(on); err != nil {
+		a.appendLog("PTT error: " + err.Error())
+	}
+	a.txActive.Set(on) //nolint:errcheck
+}
+
+// startRouter wires up the router between the open radio and reflector.
+func (a *App) startRouter() {
+	if a.rt != nil {
+		a.rt.Stop()
+	}
+	rt := router.New(a.radio, a.reflector, router.Config{
+		DropTXWhenDisconnected: true,
+	})
+	a.rt = rt
+	rt.Start()
+
+	go func() {
+		for evt := range rt.Events() {
+			if evt.Err != nil {
+				a.appendLog("Router error: " + evt.Err.Error())
+				continue
+			}
+			if evt.Header != nil {
+				who := evt.Header.MyCall
+				a.lastHeard.Set(who) //nolint:errcheck
+				dir := "RX"
+				if evt.Direction == router.DirTX {
+					dir = "TX"
+				}
+				a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))
+				if evt.Direction == router.DirRX {
+					a.rxActive.Set(true) //nolint:errcheck
+				} else {
+					a.txActive.Set(true) //nolint:errcheck
+				}
+			}
+			if evt.Frame != nil && evt.Frame.End {
+				if evt.Direction == router.DirRX {
+					a.rxActive.Set(false) //nolint:errcheck
+				} else {
+					a.txActive.Set(false) //nolint:errcheck
+				}
+			}
+		}
+	}()
+}
+
+func (a *App) shutdown() {
+	a.disconnect()
+	a.closeRadio()
+	if a.irc != nil {
+		a.irc.Stop()
+	}
+	if err := config.Save(a.cfg); err != nil {
+		_ = err // best-effort save on exit
+	}
+}
+
+// buildMyCall constructs the full 8-char D-STAR gateway callsign from the
+// stored base callsign and suffix letter (e.g. "KR4GCQ" + "D" → "KR4GCQ D").
+func buildMyCall(callsign, suffix string) string {
+	s := strings.ToUpper(suffix)
+	if len(s) != 1 || s[0] < 'A' || s[0] > 'Z' {
+		s = "A"
+	}
+	base := strings.ToUpper(strings.TrimSpace(callsign))
+	if len(base) > 7 {
+		base = base[:7]
+	}
+	return fmt.Sprintf("%-7s%s", base, s)
+}

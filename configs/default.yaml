@@ -1,0 +1,38 @@
+version: 1
+
+callsign: "N0CALL  "
+
+radio:
+  port: "/dev/ttyUSB0"  # Windows: "COM3"
+  baud_rate: 115200
+  data_bits: 8
+  stop_bits: "1"
+  parity: "none"
+  ptt_via_rts: true
+
+reflectors:
+  - name: "XRF757 A"
+    host: "xrf757.openquad.net"
+    port: 30001
+    module: "A"
+    protocol: "DExtra"
+
+  - name: "REF001 C"
+    host: "ref001.dstargateway.org"
+    port: 20001
+    module: "C"
+    protocol: "DPlus"
+
+  - name: "XLX302 A"
+    host: "xlx302.openquad.net"
+    port: 30001
+    module: "A"
+    protocol: "XLX"
+
+last_used_reflector: "XRF757 A"
+
+ui:
+  theme: "system"       # "dark", "light", or "system"
+  log_max_lines: 500
+  window_width: 960
+  window_height: 720

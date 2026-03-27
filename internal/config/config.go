@@ -1,0 +1,104 @@
+// Package config loads and saves application configuration from a YAML file.
+// The config file is stored at $XDG_CONFIG_HOME/refconnect/config.yaml,
+// falling back to ~/.config/refconnect/config.yaml.
+package config
+
+import (
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the root application configuration struct.
+type Config struct {
+	Version            int              `yaml:"version"`
+	Callsign           string           `yaml:"callsign"`
+	CallsignSuffix     string           `yaml:"callsign_suffix"` // gateway module letter appended to callsign, e.g. "D"
+	Radio              RadioConfig      `yaml:"radio"`
+	Reflectors         []ReflectorEntry `yaml:"reflectors"`
+	LastUsedReflector  string           `yaml:"last_used_reflector"`
+	UI                 UIConfig         `yaml:"ui"`
+}
+
+// RadioConfig holds serial port settings for the connected radio.
+type RadioConfig struct {
+	Port      string `yaml:"port"`
+	BaudRate  int    `yaml:"baud_rate"`
+	DataBits  int    `yaml:"data_bits"`
+	StopBits  string `yaml:"stop_bits"` // "1", "1.5", "2"
+	Parity    string `yaml:"parity"`    // "none", "even", "odd"
+	PTTViaRTS bool   `yaml:"ptt_via_rts"`
+}
+
+// ReflectorEntry is a saved reflector connection profile.
+type ReflectorEntry struct {
+	Name     string `yaml:"name"`
+	Host     string `yaml:"host"`
+	Port     uint16 `yaml:"port"`
+	Module   string `yaml:"module"`   // single letter "A"–"Z"
+	Protocol string `yaml:"protocol"` // "DExtra", "DPlus", "XLX"
+}
+
+// UIConfig holds window and display preferences.
+type UIConfig struct {
+	Theme        string  `yaml:"theme"`         // "dark", "light", "system"
+	LogMaxLines  int     `yaml:"log_max_lines"`
+	WindowWidth  float32 `yaml:"window_width"`
+	WindowHeight float32 `yaml:"window_height"`
+}
+
+// Dir returns the platform config directory for refconnect.
+func Dir() (string, error) {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "refconnect"), nil
+}
+
+// Load reads the config file from the standard location.
+// If the file does not exist, Default() is returned with no error.
+func Load() (*Config, error) {
+	dir, err := Dir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "config.yaml")
+
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		c := Default()
+		return c, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var c Config
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// Save writes the config to the standard location, creating directories as needed.
+func Save(c *Config) error {
+	dir, err := Dir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644)
+}
