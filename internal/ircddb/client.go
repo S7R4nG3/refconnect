@@ -66,10 +66,11 @@ type Event struct {
 // Client maintains a persistent ircDDB connection, keeping the local
 // callsign registered with the current public IP address.
 type Client struct {
-	nick    string // IRC nick: 8-char D-STAR callsign with spaces→underscores
-	state   atomic.Int32
-	eventCh chan Event
-	stopCh  chan struct{}
+	nick         string // IRC nick: 8-char D-STAR callsign with spaces→underscores
+	state        atomic.Int32
+	eventCh      chan Event
+	stopCh       chan struct{}
+	registeredCh chan struct{} // closed once StateRegistered is first reached
 }
 
 // New creates a Client for the given 8-char D-STAR gateway callsign.
@@ -97,8 +98,9 @@ func New(callsign string) *Client {
 	moduleNum := int(module-'A') + 1
 	nick := fmt.Sprintf("%s-%d", strings.ToLower(base), moduleNum)
 	return &Client{
-		nick:    nick,
-		eventCh: make(chan Event, 8),
+		nick:         nick,
+		eventCh:      make(chan Event, 8),
+		registeredCh: make(chan struct{}),
 	}
 }
 
@@ -138,18 +140,23 @@ func (c *Client) Nick() string {
 // WaitRegistered blocks until the client reaches StateRegistered or the
 // timeout expires. Returns true if registered within the timeout.
 func (c *Client) WaitRegistered(timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if c.State() == StateRegistered {
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
+	select {
+	case <-c.registeredCh:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
-	return false
 }
 
 func (c *Client) setState(s State, msg string) {
 	c.state.Store(int32(s))
+	if s == StateRegistered {
+		select {
+		case <-c.registeredCh: // already closed
+		default:
+			close(c.registeredCh)
+		}
+	}
 	select {
 	case c.eventCh <- Event{State: s, Message: msg}:
 	default:

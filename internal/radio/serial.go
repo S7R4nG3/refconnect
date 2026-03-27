@@ -110,17 +110,19 @@ func (r *SerialRadio) PTT(on bool) error {
 // readLoop runs in a background goroutine, feeding received frames into channels.
 func (r *SerialRadio) readLoop() {
 	for {
+		err := readNext(r.port, r.hdrCh, r.frmCh)
+		if err == nil {
+			continue
+		}
+		// Exit cleanly on intentional close or EOF.
 		select {
 		case <-r.stopCh:
 			return
 		default:
 		}
-		err := readNext(r.port, r.hdrCh, r.frmCh)
 		if err == io.EOF {
 			return
 		}
-		// On non-fatal errors (framing glitches), log and continue.
-		// The caller can check IsOpen(); if the port was closed the loop exits.
-		_ = err
+		// Non-fatal framing glitch — keep reading.
 	}
 }

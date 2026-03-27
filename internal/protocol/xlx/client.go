@@ -2,6 +2,7 @@ package xlx
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -162,11 +163,6 @@ func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 func (c *Client) rxLoop() {
 	buf := make([]byte, udpReadBuf)
 	for {
-		select {
-		case <-c.stopCh:
-			return
-		default:
-		}
 		c.mu.Lock()
 		conn := c.conn
 		c.mu.Unlock()
@@ -192,6 +188,7 @@ func (c *Client) rxLoop() {
 			select {
 			case c.hdrCh <- *hdr:
 			default:
+				log.Printf("xlx: dropped inbound header: channel full")
 			}
 		}
 		if frm != nil {

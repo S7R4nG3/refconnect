@@ -136,31 +136,27 @@ func (c *Client) Disconnect() error {
 
 func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	c.mu.Lock()
-	conn := c.conn
+	conn, addr, sid := c.conn, c.remoteAddr, c.streamID
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dextra: not connected")
 	}
-	pkt, err := encodeHeader(c.streamID, hdr)
+	pkt, err := encodeHeader(sid, hdr)
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	addr := c.remoteAddr
-	c.mu.Unlock()
 	_, err = conn.WriteToUDP(pkt, addr)
 	return err
 }
 
 func (c *Client) SendFrame(f dstar.DVFrame) error {
 	c.mu.Lock()
-	conn := c.conn
-	addr := c.remoteAddr
+	conn, addr, sid := c.conn, c.remoteAddr, c.streamID
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dextra: not connected")
 	}
-	pkt := encodeVoice(c.streamID, f)
+	pkt := encodeVoice(sid, f)
 	_, err := conn.WriteToUDP(pkt, addr)
 	return err
 }
@@ -173,11 +169,6 @@ func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 func (c *Client) rxLoop() {
 	buf := make([]byte, udpReadBuf)
 	for {
-		select {
-		case <-c.stopCh:
-			return
-		default:
-		}
 		c.mu.Lock()
 		conn := c.conn
 		c.mu.Unlock()
@@ -203,6 +194,7 @@ func (c *Client) rxLoop() {
 			select {
 			case c.hdrCh <- *hdr:
 			default:
+				log.Printf("dextra: dropped inbound header: channel full")
 			}
 		}
 		if frm != nil {

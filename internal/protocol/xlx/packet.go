@@ -23,6 +23,7 @@ package xlx
 import (
 	"encoding/binary"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
@@ -145,9 +146,8 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 	return nil, nil, nil
 }
 
-var streamCounter uint16
+var streamCounter atomic.Uint32
 
 func nextStreamID() uint16 {
-	streamCounter++
-	return streamCounter
+	return uint16(streamCounter.Add(1))
 }

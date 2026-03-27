@@ -36,17 +36,17 @@ func writeHeader(w io.Writer, hdr dstar.DVHeader) error {
 	if err != nil {
 		return err
 	}
-	buf := make([]byte, 3+wirHeaderPayloadLen)
+	var buf [3 + wirHeaderPayloadLen]byte
 	buf[0] = frameTypeHeader
 	binary.BigEndian.PutUint16(buf[1:3], uint16(wirHeaderPayloadLen))
 	copy(buf[3:], encoded[:])
-	_, err = w.Write(buf)
+	_, err = w.Write(buf[:])
 	return err
 }
 
 // writeFrame encodes a DVFrame and writes it to w.
 func writeFrame(w io.Writer, f dstar.DVFrame) error {
-	buf := make([]byte, 3+wireVoicePayloadLen)
+	var buf [3 + wireVoicePayloadLen]byte
 	buf[0] = frameTypeVoice
 	binary.BigEndian.PutUint16(buf[1:3], uint16(wireVoicePayloadLen))
 	seq := f.Seq
@@ -56,21 +56,25 @@ func writeFrame(w io.Writer, f dstar.DVFrame) error {
 	buf[3] = seq
 	copy(buf[4:13], f.AMBE[:])
 	copy(buf[13:16], f.SlowData[:])
-	_, err := w.Write(buf)
+	_, err := w.Write(buf[:])
 	return err
 }
 
 // readNext reads one framed message from r and dispatches it to the appropriate channel.
 // Returns io.EOF when the underlying reader is closed.
 func readNext(r io.Reader, hdrCh chan<- dstar.DVHeader, frmCh chan<- dstar.DVFrame) error {
-	hdr := make([]byte, 3)
-	if _, err := io.ReadFull(r, hdr); err != nil {
+	var hdrBuf [3]byte
+	if _, err := io.ReadFull(r, hdrBuf[:]); err != nil {
 		return err
 	}
-	ftype := hdr[0]
-	plen := int(binary.BigEndian.Uint16(hdr[1:3]))
+	ftype := hdrBuf[0]
+	plen := int(binary.BigEndian.Uint16(hdrBuf[1:3]))
 
-	payload := make([]byte, plen)
+	var payloadBuf [wirHeaderPayloadLen]byte // large enough for either frame type
+	if plen > len(payloadBuf) {
+		return fmt.Errorf("radio: frame payload too large: %d", plen)
+	}
+	payload := payloadBuf[:plen]
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return err
 	}

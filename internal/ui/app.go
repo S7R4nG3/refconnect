@@ -88,10 +88,10 @@ func (a *App) appendLog(msg string) {
 	if maxLines <= 0 {
 		maxLines = 500
 	}
-	if len(lines) >= maxLines {
-		lines = lines[len(lines)-maxLines+1:]
+	lines = append([]string{line}, lines...)
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
 	}
-	lines = append(lines, line)
 	a.logLines.Set(lines) //nolint:errcheck
 }
 

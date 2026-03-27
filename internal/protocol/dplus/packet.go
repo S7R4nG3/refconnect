@@ -18,6 +18,7 @@ package dplus
 import (
 	"encoding/binary"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
@@ -86,42 +87,36 @@ func encodeHeader(streamID [4]byte, hdr dstar.DVHeader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	inner := make([]byte, 54)
-	copy(inner[0:4], dsvtMagic[:])
-	inner[4] = typeHeader
-	inner[5] = 0x00
-	inner[6] = 0x00
-	inner[7] = 0x03
-	copy(inner[8:12], streamID[:])
-	inner[12] = 0x80
-	copy(inner[13:54], raw[:])
-
-	pkt := make([]byte, 2+len(inner))
-	binary.LittleEndian.PutUint16(pkt[0:2], uint16(2+len(inner)))
-	copy(pkt[2:], inner)
+	pkt := make([]byte, 56) // 2-byte length prefix + 54-byte DSVT header
+	binary.LittleEndian.PutUint16(pkt[0:2], 56)
+	copy(pkt[2:6], dsvtMagic[:])
+	pkt[6] = typeHeader
+	pkt[7] = 0x00
+	pkt[8] = 0x00
+	pkt[9] = 0x03
+	copy(pkt[10:14], streamID[:])
+	pkt[14] = 0x80
+	copy(pkt[15:56], raw[:])
 	return pkt, nil
 }
 
 // encodeVoice wraps a DV voice frame in a length-prefixed DPlus/DSVT packet.
 func encodeVoice(streamID [4]byte, f dstar.DVFrame) []byte {
-	inner := make([]byte, 27)
-	copy(inner[0:4], dsvtMagic[:])
-	inner[4] = typeVoice
-	inner[5] = 0x00
-	inner[6] = 0x00
-	inner[7] = 0x03
-	copy(inner[8:12], streamID[:])
+	pkt := make([]byte, 29) // 2-byte length prefix + 27-byte DSVT voice frame
+	binary.LittleEndian.PutUint16(pkt[0:2], 29)
+	copy(pkt[2:6], dsvtMagic[:])
+	pkt[6] = typeVoice
+	pkt[7] = 0x00
+	pkt[8] = 0x00
+	pkt[9] = 0x03
+	copy(pkt[10:14], streamID[:])
 	seq := f.Seq
 	if f.End {
 		seq |= 0x40
 	}
-	inner[12] = seq
-	copy(inner[13:22], f.AMBE[:])
-	copy(inner[22:25], f.SlowData[:])
-
-	pkt := make([]byte, 2+len(inner))
-	binary.LittleEndian.PutUint16(pkt[0:2], uint16(2+len(inner)))
-	copy(pkt[2:], inner)
+	pkt[14] = seq
+	copy(pkt[15:24], f.AMBE[:])
+	copy(pkt[24:27], f.SlowData[:])
 	return pkt
 }
 
@@ -164,11 +159,10 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 	return nil, nil, nil
 }
 
-var streamCounter uint32
+var streamCounter atomic.Uint32
 
 func nextStreamID() [4]byte {
-	streamCounter++
 	var id [4]byte
-	binary.LittleEndian.PutUint32(id[:], streamCounter)
+	binary.LittleEndian.PutUint32(id[:], streamCounter.Add(1))
 	return id
 }

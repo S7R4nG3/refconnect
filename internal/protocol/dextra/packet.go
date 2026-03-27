@@ -16,6 +16,7 @@ package dextra
 import (
 	"encoding/binary"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
@@ -146,12 +147,10 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 	return nil, nil, nil
 }
 
-// newStreamID generates a random-ish 4-byte stream ID from a counter.
-var streamCounter uint32
+var streamCounter atomic.Uint32
 
 func nextStreamID() [4]byte {
-	streamCounter++
 	var id [4]byte
-	binary.LittleEndian.PutUint32(id[:], streamCounter)
+	binary.LittleEndian.PutUint32(id[:], streamCounter.Add(1))
 	return id
 }

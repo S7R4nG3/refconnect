@@ -70,7 +70,8 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 
 	return container.NewVBox(
 		widget.NewLabel("Radio"),
-		container.NewGridWithColumns(3, portSelect, openBtn, closeBtn),
+		portSelect,
+		container.NewGridWithColumns(2, openBtn, closeBtn),
 		pttBtn,
 	)
 }
