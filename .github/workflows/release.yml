@@ -64,7 +64,7 @@ jobs:
           sips -z 256 256   docs/antenna.png --out AppIcon.iconset/icon_256x256.png
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_256x256@2x.png
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_512x512.png
-          iconutil -c icns AppIcon.iconset --output RefConnect.app/Contents/Resources/AppIcon.icns
+          iconutil -c icns AppIcon.iconset -o RefConnect.app/Contents/Resources/AppIcon.icns
 
       - name: Package
         run: zip -r RefConnect-macOS-arm64.zip RefConnect.app
@@ -88,6 +88,9 @@ jobs:
       - name: Build
         env:
           GOARCH: amd64
+          CGO_ENABLED: "1"
+          CGO_CFLAGS: "-arch x86_64"
+          CGO_LDFLAGS: "-arch x86_64"
         run: go build -ldflags="-s -w" -o refconnect .
 
       - name: Bundle .app
@@ -109,7 +112,7 @@ jobs:
           sips -z 256 256   docs/antenna.png --out AppIcon.iconset/icon_256x256.png
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_256x256@2x.png
           sips -z 512 512   docs/antenna.png --out AppIcon.iconset/icon_512x512.png
-          iconutil -c icns AppIcon.iconset --output RefConnect.app/Contents/Resources/AppIcon.icns
+          iconutil -c icns AppIcon.iconset -o RefConnect.app/Contents/Resources/AppIcon.icns
 
       - name: Package
         run: zip -r RefConnect-macOS-amd64.zip RefConnect.app
