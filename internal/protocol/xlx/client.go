@@ -87,6 +87,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 
 	// Send 39-byte 'L' connect packet.
 	pkt := buildConnectPacket(cfg.MyCall, cfg.Module)
+	log.Printf("xlx: sending connect to %s:%d module %c", cfg.Host, cfg.Port, cfg.Module)
 	if _, err := conn.Write(pkt); err != nil {
 		return fail("connect send: "+err.Error(), err)
 	}
@@ -129,18 +130,26 @@ func (c *Client) Disconnect() error {
 
 func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	c.mu.Lock()
+	c.streamID = nextStreamID()
 	conn := c.conn
 	sid := c.streamID
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("xlx: not connected")
 	}
+	log.Printf("xlx: SendHeader streamID=%04X RPT1=%q RPT2=%q MYCALL=%q",
+		sid, hdr.RPT1, hdr.RPT2, hdr.MyCall)
 	pkt, err := encodeHeader(sid, hdr)
 	if err != nil {
 		return err
 	}
-	_, err = conn.Write(pkt)
-	return err
+	// Send header twice for UDP reliability.
+	for i := 0; i < 2; i++ {
+		if _, err = conn.Write(pkt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) SendFrame(f dstar.DVFrame) error {

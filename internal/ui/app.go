@@ -10,7 +10,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/data/binding"
-	"fyne.io/fyne/v2/theme"
 
 	"github.com/S7R4nG3/refconnect/internal/config"
 	"github.com/S7R4nG3/refconnect/internal/ircddb"
@@ -28,10 +27,12 @@ type App struct {
 	win     fyne.Window
 	cfg     *config.Config
 
-	radio     radio.RadioInterface
-	reflector protocol.Reflector
-	rt        *router.Router
-	irc       *ircddb.Client
+	radio           radio.RadioInterface
+	reflector       protocol.Reflector
+	reflectorModule byte   // target module on the reflector (e.g. 'C')
+	reflectorCall   string // reflector D-STAR callsign (e.g. "REF001")
+	rt              *router.Router
+	irc             *ircddb.Client
 
 	// Shared data bindings updated from any goroutine, consumed by widgets.
 	statusText  binding.String
@@ -58,14 +59,7 @@ func Run(cfg *config.Config) {
 
 	a.fyneApp = app.NewWithID("org.refconnect.refconnect")
 
-	// Apply theme preference.
-	switch cfg.UI.Theme {
-	case "dark":
-		a.fyneApp.Settings().SetTheme(theme.DarkTheme())
-	case "light":
-		a.fyneApp.Settings().SetTheme(theme.LightTheme())
-	// "system" uses the default auto-detect behaviour
-	}
+	a.fyneApp.Settings().SetTheme(&refconnectTheme{})
 
 	a.win = a.fyneApp.NewWindow("RefConnect — D-STAR Reflector Client")
 	a.win.SetContent(buildMainWindow(a))
@@ -128,6 +122,10 @@ func (a *App) connect(entry config.ReflectorEntry) {
 			}
 		}()
 	}
+
+	a.reflectorModule = entry.Module[0]
+	// Extract reflector callsign from entry name (e.g. "REF001 C" → "REF001").
+	a.reflectorCall = strings.TrimRight(strings.TrimSuffix(entry.Name, " "+entry.Module), " ")
 
 	cfg := protocol.Config{
 		Host:     entry.Host,
@@ -200,6 +198,8 @@ func (a *App) openRadio(portName string) {
 		Port:      portName,
 		BaudRate:  a.cfg.Radio.BaudRate,
 		DataBits:  a.cfg.Radio.DataBits,
+		StopBits:  a.cfg.Radio.StopBits,
+		Parity:    a.cfg.Radio.Parity,
 		PTTViaRTS: a.cfg.Radio.PTTViaRTS,
 	}
 	if err := sr.Open(cfg); err != nil {
@@ -243,8 +243,12 @@ func (a *App) startRouter() {
 	if a.rt != nil {
 		a.rt.Stop()
 	}
+	myCall := buildMyCall(a.cfg.Callsign, a.cfg.CallsignSuffix)
 	rt := router.New(a.radio, a.reflector, router.Config{
 		DropTXWhenDisconnected: true,
+		MyCall:                 myCall,
+		ReflectorModule:        a.reflectorModule,
+		ReflectorCall:          a.reflectorCall,
 	})
 	a.rt = rt
 	rt.Start()
@@ -261,6 +265,9 @@ func (a *App) startRouter() {
 				dir := "RX"
 				if evt.Direction == router.DirTX {
 					dir = "TX"
+					if a.irc != nil {
+						a.irc.AnnounceUser(*evt.Header)
+					}
 				}
 				a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))
 				if evt.Direction == router.DirRX {
@@ -295,8 +302,8 @@ func (a *App) shutdown() {
 // stored base callsign and suffix letter (e.g. "KR4GCQ" + "D" → "KR4GCQ D").
 func buildMyCall(callsign, suffix string) string {
 	s := strings.ToUpper(suffix)
-	if len(s) != 1 || s[0] < 'A' || s[0] > 'Z' {
-		s = "A"
+	if len(s) != 1 || (s[0] != ' ' && (s[0] < 'A' || s[0] > 'Z')) {
+		s = " "
 	}
 	base := strings.ToUpper(strings.TrimSpace(callsign))
 	if len(base) > 7 {

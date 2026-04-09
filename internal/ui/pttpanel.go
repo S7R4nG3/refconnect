@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"fmt"
+	"strconv"
+
 	"go.bug.st/serial"
 
 	"fyne.io/fyne/v2"
@@ -8,7 +11,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// buildPTTPanel returns the serial port selector and the PTT button.
+// buildPTTPanel returns the serial port selector, baud rate field, and open/close buttons.
 func buildPTTPanel(a *App) fyne.CanvasObject {
 	ports, _ := serial.GetPortsList()
 	if len(ports) == 0 {
@@ -27,6 +30,10 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		portSelect.SetSelected(ports[0])
 	}
 
+	baudEntry := widget.NewEntry()
+	baudEntry.SetText(fmt.Sprintf("%d", a.cfg.Radio.BaudRate))
+	baudEntry.SetPlaceHolder("9600")
+
 	openBtn := widget.NewButton("Open", nil)
 	closeBtn := widget.NewButton("Close", nil)
 	closeBtn.Disable()
@@ -37,10 +44,22 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 			a.appendLog("No serial port selected.")
 			return
 		}
+		baud, err := strconv.Atoi(baudEntry.Text)
+		if err != nil || baud <= 0 {
+			a.appendLog("Invalid baud rate.")
+			return
+		}
 		a.cfg.Radio.Port = port
-		a.openRadio(port)
+		a.cfg.Radio.BaudRate = baud
 		openBtn.Disable()
-		closeBtn.Enable()
+		go func() {
+			a.openRadio(port)
+			if a.radio == nil || !a.radio.IsOpen() {
+				openBtn.Enable()
+			} else {
+				closeBtn.Enable()
+			}
+		}()
 	}
 	closeBtn.OnTapped = func() {
 		a.closeRadio()
@@ -48,30 +67,13 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		closeBtn.Disable()
 	}
 
-	pttBtn := widget.NewButton("PTT", nil)
-	pttBtn.Importance = widget.DangerImportance
-	pttActive := false
-	pttBtn.OnTapped = func() {
-		pttActive = !pttActive
-		a.ptt(pttActive)
-		if pttActive {
-			pttBtn.SetText("PTT  [ON]")
-		} else {
-			pttBtn.SetText("PTT")
-		}
-	}
-
-	// Spacebar shortcut for PTT.
-	a.win.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
-		if ev.Name == fyne.KeySpace {
-			pttBtn.OnTapped()
-		}
-	})
-
 	return container.NewVBox(
 		widget.NewLabel("Radio"),
 		portSelect,
+		container.NewGridWithColumns(2,
+			widget.NewLabel("Baud Rate"),
+			baudEntry,
+		),
 		container.NewGridWithColumns(2, openBtn, closeBtn),
-		pttBtn,
 	)
 }

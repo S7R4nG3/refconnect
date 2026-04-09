@@ -1,4 +1,10 @@
 **.DS_Store*
 **.app
+**CLAUDE.md*
 *.claude
 refconnect
+**.log
+**.exe
+**.pcapng
+**pcaps*
+

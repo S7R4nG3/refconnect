@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
 
 const (
@@ -69,6 +71,7 @@ type Client struct {
 	nick         string // IRC nick: 8-char D-STAR callsign with spaces→underscores
 	state        atomic.Int32
 	eventCh      chan Event
+	sendCh       chan string  // outbound IRC lines queued by AnnounceUser
 	stopCh       chan struct{}
 	registeredCh chan struct{} // closed once StateRegistered is first reached
 }
@@ -100,6 +103,7 @@ func New(callsign string) *Client {
 	return &Client{
 		nick:         nick,
 		eventCh:      make(chan Event, 8),
+		sendCh:       make(chan string, 16),
 		registeredCh: make(chan struct{}),
 	}
 }
@@ -145,6 +149,30 @@ func (c *Client) WaitRegistered(timeout time.Duration) bool {
 		return true
 	case <-time.After(timeout):
 		return false
+	}
+}
+
+// AnnounceUser sends a user-update PRIVMSG to #dstar announcing a D-STAR
+// transmission. The message is dropped silently if the client is not currently
+// registered or if the send buffer is full.
+//
+// ircDDB user-update format:
+//
+//	PRIVMSG #dstar :@U <mycall8> <rpt1-8> <rpt2-8> <urcall8>
+func (c *Client) AnnounceUser(hdr dstar.DVHeader) {
+	if State(c.state.Load()) != StateRegistered {
+		return
+	}
+	msg := fmt.Sprintf("PRIVMSG %s :@U %s %s %s %s",
+		gatewayChan,
+		dstar.PadCallsign(strings.TrimSpace(hdr.MyCall), 8),
+		dstar.PadCallsign(strings.TrimSpace(hdr.RPT1), 8),
+		dstar.PadCallsign(strings.TrimSpace(hdr.RPT2), 8),
+		dstar.PadCallsign(strings.TrimSpace(hdr.YourCall), 8),
+	)
+	select {
+	case c.sendCh <- msg:
+	default:
 	}
 }
 
@@ -295,6 +323,11 @@ func (c *Client) session(conn net.Conn) error {
 				return errNickInUse
 			case "ERROR":
 				return fmt.Errorf("server error: %s", line)
+			}
+
+		case msg := <-c.sendCh:
+			if err := send(msg); err != nil {
+				return err
 			}
 
 		case <-ticker.C:

@@ -1,17 +1,17 @@
 package dstar
 
-// crc16CCITT computes the CRC-CCITT (poly 0x1021, init 0xFFFF) checksum
-// used in D-STAR DV headers.  The result is bit-inverted before storage,
-// matching the convention used by most D-STAR implementations.
+// crc16CCITT computes the D-STAR header CRC using the LSB-first (reflected)
+// CRC-CCITT algorithm: poly 0x8408 (reflected 0x1021), init 0xFFFF, final XOR 0xFFFF.
+// Verified against USBPcap captures of Icom IC-705 DV Gateway Terminal frames.
 func crc16CCITT(data []byte) uint16 {
 	crc := uint16(0xFFFF)
 	for _, b := range data {
-		crc ^= uint16(b) << 8
+		crc ^= uint16(b)
 		for i := 0; i < 8; i++ {
-			if crc&0x8000 != 0 {
-				crc = (crc << 1) ^ 0x1021
+			if crc&1 != 0 {
+				crc = (crc >> 1) ^ 0x8408
 			} else {
-				crc <<= 1
+				crc >>= 1
 			}
 		}
 	}

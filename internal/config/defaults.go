@@ -8,11 +8,11 @@ func Default() *Config {
 		CallsignSuffix: "A",
 		Radio: RadioConfig{
 			Port:      "/dev/ttyUSB0",
-			BaudRate:  115200,
+			BaudRate:  38400,
 			DataBits:  8,
-			StopBits:  "1",
-			Parity:    "none",
-			PTTViaRTS: true,
+			StopBits:  1,
+			Parity:    "N",
+			PTTViaRTS: false,
 		},
 		Reflectors: []ReflectorEntry{
 			{

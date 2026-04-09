@@ -40,4 +40,5 @@ clean:
 	@rm -rf $(APP)
 
 test: build
+	@echo "" > refconnect.log
 	@./$(BINARY)

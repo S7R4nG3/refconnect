@@ -26,8 +26,8 @@ type RadioConfig struct {
 	Port      string `yaml:"port"`
 	BaudRate  int    `yaml:"baud_rate"`
 	DataBits  int    `yaml:"data_bits"`
-	StopBits  string `yaml:"stop_bits"` // "1", "1.5", "2"
-	Parity    string `yaml:"parity"`    // "none", "even", "odd"
+	StopBits  int    `yaml:"stop_bits"` // 1 = one stop bit, 2 = two stop bits
+	Parity    string `yaml:"parity"`    // "N" = none, "E" = even, "O" = odd
 	PTTViaRTS bool   `yaml:"ptt_via_rts"`
 }
 

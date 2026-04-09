@@ -28,8 +28,8 @@ import (
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
 
-// DefaultPort is the XLX control/DExtra port.
-const DefaultPort = 30001
+// DefaultPort is the native XLX protocol port (per xlxd CXlxProtocol).
+const DefaultPort = 10002
 
 // xlxd DSVT 12-byte fixed tag prefixes for header and voice frames.
 var dsvtHeaderTag = [12]byte{'D', 'S', 'V', 'T', 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, 0x01, 0x02}

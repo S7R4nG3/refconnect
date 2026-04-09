@@ -81,61 +81,93 @@ func buildKeepalive() []byte {
 	return []byte{0x03, 0x60, 0x00}
 }
 
-// encodeHeader wraps a D-STAR header in a length-prefixed DPlus/DSVT packet.
-func encodeHeader(streamID [4]byte, hdr dstar.DVHeader) ([]byte, error) {
+// DPlus DSVT packet framing (verified against REF001 live capture 2026-04-08):
+//
+// All DPlus packets use a 2-byte prefix:
+//   [0] = total packet length (single byte)
+//   [1] = packet class: 0x80 for DSVT data, 0xC0 for control, 0x60 for keepalive
+//
+// DSVT payload layout (after 2-byte prefix):
+//   [2-5]   "DSVT" magic
+//   [6]     Frame type: 0x10 (header) or 0x20 (voice)
+//   [7-9]   0x00, 0x00, 0x00
+//   [10-13] Config/band flags (0x20, 0x00, 0x01, 0x01)
+//   [14-15] Stream ID (2 bytes, big-endian)
+//   [16]    Sequence: 0x80 for header, 0-20 for voice (bit 6 = end)
+//   [17+]   Payload (41-byte D-STAR header, or 12-byte voice frame)
+//
+// Header packet = 58 bytes total. Voice packet = 29 bytes total.
+
+const (
+	dplusDataMarker = 0x80
+	headerPacketLen = 58 // 2 prefix + 4 DSVT + 1 type + 3 zeros + 4 config + 2 streamID + 1 seq + 41 header = 58
+	voicePacketLen  = 29 // 2 prefix + 4 DSVT + 1 type + 3 zeros + 4 config + 2 streamID + 1 seq + 9 AMBE + 3 slow = 29
+)
+
+func encodeHeader(streamID [2]byte, hdr dstar.DVHeader) ([]byte, error) {
 	raw, err := dstar.EncodeHeader(hdr)
 	if err != nil {
 		return nil, err
 	}
-	pkt := make([]byte, 56) // 2-byte length prefix + 54-byte DSVT header
-	binary.LittleEndian.PutUint16(pkt[0:2], 56)
+	pkt := make([]byte, headerPacketLen)
+	pkt[0] = headerPacketLen // 0x3A
+	pkt[1] = dplusDataMarker // 0x80
 	copy(pkt[2:6], dsvtMagic[:])
 	pkt[6] = typeHeader
-	pkt[7] = 0x00
-	pkt[8] = 0x00
-	pkt[9] = 0x03
-	copy(pkt[10:14], streamID[:])
-	pkt[14] = 0x80
-	copy(pkt[15:56], raw[:])
+	// pkt[7..9] = 0x00 (already zero)
+	pkt[10] = 0x20 // band/config flag
+	pkt[11] = 0x00
+	pkt[12] = 0x01
+	pkt[13] = 0x01
+	copy(pkt[14:16], streamID[:])
+	pkt[16] = 0x80 // header sequence flag
+	copy(pkt[17:58], raw[:])
 	return pkt, nil
 }
 
-// encodeVoice wraps a DV voice frame in a length-prefixed DPlus/DSVT packet.
-func encodeVoice(streamID [4]byte, f dstar.DVFrame) []byte {
-	pkt := make([]byte, 29) // 2-byte length prefix + 27-byte DSVT voice frame
-	binary.LittleEndian.PutUint16(pkt[0:2], 29)
+func encodeVoice(streamID [2]byte, f dstar.DVFrame) []byte {
+	pkt := make([]byte, voicePacketLen)
+	pkt[0] = voicePacketLen // 0x1D
+	pkt[1] = dplusDataMarker // 0x80
 	copy(pkt[2:6], dsvtMagic[:])
 	pkt[6] = typeVoice
-	pkt[7] = 0x00
-	pkt[8] = 0x00
-	pkt[9] = 0x03
-	copy(pkt[10:14], streamID[:])
+	// pkt[7..9] = 0x00 (already zero)
+	pkt[10] = 0x20
+	pkt[11] = 0x00
+	pkt[12] = 0x01
+	pkt[13] = 0x01
+	copy(pkt[14:16], streamID[:])
 	seq := f.Seq
 	if f.End {
 		seq |= 0x40
 	}
-	pkt[14] = seq
-	copy(pkt[15:24], f.AMBE[:])
-	copy(pkt[24:27], f.SlowData[:])
+	pkt[16] = seq
+	copy(pkt[17:26], f.AMBE[:])
+	copy(pkt[26:29], f.SlowData[:])
 	return pkt
 }
 
-// parsePacket decodes a received DPlus UDP payload (after stripping the 2-byte length prefix).
-func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
-	if len(data) < 13 {
-		return nil, nil, nil // too short (keepalive echo, etc.)
+// parsePacket decodes a received DPlus DSVT packet.
+// The raw UDP packet (including the 2-byte prefix) is passed in.
+func parsePacket(buf []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
+	if len(buf) < 17 {
+		return nil, nil, nil
 	}
-	if data[0] != 'D' || data[1] != 'S' || data[2] != 'V' || data[3] != 'T' {
-		return nil, nil, nil // not a DSVT frame
+	if buf[1] != dplusDataMarker {
+		return nil, nil, nil
+	}
+	if buf[2] != 'D' || buf[3] != 'S' || buf[4] != 'V' || buf[5] != 'T' {
+		return nil, nil, nil
 	}
 
-	switch data[4] {
+	switch buf[6] {
 	case typeHeader:
-		if len(data) < 54 {
-			return nil, nil, fmt.Errorf("dplus: short header packet")
+		if len(buf) < 58 {
+			return nil, nil, fmt.Errorf("dplus: short header packet (%d bytes)", len(buf))
 		}
+		// D-STAR header at buf[17:58] (41 bytes including CRC)
 		var raw [dstar.HeaderBytes]byte
-		copy(raw[:], data[13:54])
+		copy(raw[:], buf[17:58])
 		h, err := dstar.DecodeHeader(raw)
 		if err != nil {
 			return nil, nil, err
@@ -143,17 +175,18 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 		return &h, nil, nil
 
 	case typeVoice:
-		if len(data) < 25 {
-			return nil, nil, fmt.Errorf("dplus: short voice packet")
+		if len(buf) < 29 {
+			return nil, nil, fmt.Errorf("dplus: short voice packet (%d bytes)", len(buf))
 		}
-		seq := data[12]
+		// buf[16] = seq, buf[17:26] = AMBE(9), buf[26:29] = SlowData(3)
+		seq := buf[16]
 		end := seq&0x40 != 0
 		seq &^= 0x40
 		var f dstar.DVFrame
 		f.Seq = seq
 		f.End = end
-		copy(f.AMBE[:], data[13:22])
-		copy(f.SlowData[:], data[22:25])
+		copy(f.AMBE[:], buf[17:26])
+		copy(f.SlowData[:], buf[26:29])
 		return nil, &f, nil
 	}
 	return nil, nil, nil
@@ -161,8 +194,8 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 
 var streamCounter atomic.Uint32
 
-func nextStreamID() [4]byte {
-	var id [4]byte
-	binary.LittleEndian.PutUint32(id[:], streamCounter.Add(1))
+func nextStreamID() [2]byte {
+	var id [2]byte
+	binary.BigEndian.PutUint16(id[:], uint16(streamCounter.Add(1)))
 	return id
 }

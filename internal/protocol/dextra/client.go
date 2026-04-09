@@ -136,17 +136,28 @@ func (c *Client) Disconnect() error {
 
 func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	c.mu.Lock()
+	// Generate a new stream ID for each transmission so the reflector
+	// treats it as a distinct voice stream.
+	c.streamID = nextStreamID()
 	conn, addr, sid := c.conn, c.remoteAddr, c.streamID
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dextra: not connected")
 	}
+	log.Printf("dextra: SendHeader streamID=%02X RPT1=%q RPT2=%q MYCALL=%q URCALL=%q",
+		sid, hdr.RPT1, hdr.RPT2, hdr.MyCall, hdr.YourCall)
 	pkt, err := encodeHeader(sid, hdr)
 	if err != nil {
 		return err
 	}
-	_, err = conn.WriteToUDP(pkt, addr)
-	return err
+	log.Printf("dextra: TX header packet (%d bytes):\n%s", len(pkt), hex.Dump(pkt))
+	// Send header twice for UDP reliability.
+	for i := 0; i < 2; i++ {
+		if _, err = conn.WriteToUDP(pkt, addr); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) SendFrame(f dstar.DVFrame) error {

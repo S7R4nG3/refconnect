@@ -1,7 +1,6 @@
 package dplus
 
 import (
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -32,8 +31,11 @@ type Client struct {
 	frmCh   chan dstar.DVFrame
 	eventCh chan protocol.Event
 
-	stopCh   chan struct{}
-	streamID [4]byte
+	stopCh           chan struct{}
+	streamID         [2]byte
+	rxKeepaliveCount int
+	rxStreamID       [2]byte // current inbound stream ID for dedup
+	rxStreamActive   bool
 }
 
 // New returns a new DPlus client.
@@ -95,46 +97,69 @@ func (c *Client) Connect(cfg protocol.Config) error {
 		return err
 	}
 
+	buf := make([]byte, udpReadBuf)
+
+	// readControl reads UDP packets, skipping 3-byte keepalives, until it
+	// receives a packet of at least minLen bytes or the deadline expires.
+	readControl := func(minLen int, desc string) (int, error) {
+		deadline := time.Now().Add(connectTimeout)
+		for {
+			conn.SetReadDeadline(deadline) //nolint:errcheck
+			n, from, err := conn.ReadFromUDP(buf)
+			conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+			if err != nil {
+				return 0, fmt.Errorf("dplus: %s: %w", desc, err)
+			}
+			if n == 3 && buf[0] == 0x03 && buf[1] == 0x60 {
+				log.Printf("dplus: skipping keepalive while waiting for %s", desc)
+				continue
+			}
+			log.Printf("dplus: %s: %d bytes from %s:\n%s", desc, n, from, hex.Dump(buf[:n]))
+			if n < minLen {
+				log.Printf("dplus: %s too short (%d bytes), skipping", desc, n)
+				continue
+			}
+			return n, nil
+		}
+	}
+
 	// Step 1: send CT_LINK1 and wait for server echo.
 	link1 := buildLink1Packet(true)
 	log.Printf("dplus: sending CT_LINK1 to %s:%d:\n%s", cfg.Host, cfg.Port, hex.Dump(link1))
 	if _, err := conn.WriteToUDP(link1, addr); err != nil {
 		return fail("CT_LINK1 send: "+err.Error(), err)
 	}
-
-	conn.SetReadDeadline(time.Now().Add(connectTimeout)) //nolint:errcheck
-	buf := make([]byte, udpReadBuf)
-	n, fromAddr, err := conn.ReadFromUDP(buf)
-	conn.SetReadDeadline(time.Time{}) //nolint:errcheck
-	if err != nil {
-		return fail("CT_LINK1 echo timeout: "+err.Error(), fmt.Errorf("dplus: CT_LINK1 echo: %w", err))
+	if _, err := readControl(5, "CT_LINK1 echo"); err != nil {
+		return fail("CT_LINK1 echo timeout: "+err.Error(), err)
 	}
-	log.Printf("dplus: CT_LINK1 echo: %d bytes from %s:\n%s", n, fromAddr, hex.Dump(buf[:n]))
 
-	// Step 2: send CT_LINK2 login packet and wait for OKRW ACK.
+	// Step 2: send CT_LINK2 login packet and wait for OKRW or BUSY ACK.
 	loginPkt := buildLoginPacket(cfg.MyCall)
 	log.Printf("dplus: sending CT_LINK2 login to %s:%d:\n%s", cfg.Host, cfg.Port, hex.Dump(loginPkt))
 	if _, err := conn.WriteToUDP(loginPkt, addr); err != nil {
 		return fail("CT_LINK2 send: "+err.Error(), err)
 	}
-
-	conn.SetReadDeadline(time.Now().Add(connectTimeout)) //nolint:errcheck
-	n, fromAddr, err = conn.ReadFromUDP(buf)
-	conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+	n, err := readControl(8, "login ack")
 	if err != nil {
-		return fail("login ack timeout: "+err.Error(), fmt.Errorf("dplus: login ack: %w", err))
+		return fail("login ack timeout: "+err.Error(), err)
 	}
-	log.Printf("dplus: login ack: %d bytes from %s:\n%s", n, fromAddr, hex.Dump(buf[:n]))
 
-	// ACK is 8 bytes: 08 C0 04 00 4F 4B 52 57 ("OKRW" at bytes [4-7]).
+	// ACK is 8 bytes: 08 C0 04 00 + 4-byte status.
+	// "OKRW" (4F 4B 52 57) = accepted; "BUSY" (42 55 53 59) = module in use.
+	if buf[4] == 'B' && buf[5] == 'U' && buf[6] == 'S' && buf[7] == 'Y' {
+		return fail("module busy — reflector already linked; wait a moment and retry",
+			fmt.Errorf("dplus: module busy"))
+	}
 	if n < 8 || buf[4] != 'O' || buf[5] != 'K' || buf[6] != 'R' || buf[7] != 'W' {
 		show := n
 		if show > 8 {
 			show = 8
 		}
-		return fail(fmt.Sprintf("login rejected (expected OKRW, got %q)", buf[:show]), fmt.Errorf("dplus: login rejected"))
+		return fail(fmt.Sprintf("login rejected (expected OKRW, got %q)", buf[:show]),
+			fmt.Errorf("dplus: login rejected"))
 	}
 
+	log.Printf("dplus: connected from local %s to %s", conn.LocalAddr(), addr)
 	c.setState(protocol.StateConnected, fmt.Sprintf("Linked to %s module %c", cfg.Host, cfg.Module))
 	go c.rxLoop()
 	go c.keepaliveLoop()
@@ -147,7 +172,9 @@ func (c *Client) Disconnect() error {
 	if c.conn == nil {
 		return nil
 	}
-	c.conn.WriteToUDP(buildDisconnectPacket(), c.remoteAddr) //nolint:errcheck
+	disc := buildDisconnectPacket()
+	c.conn.WriteToUDP(disc, c.remoteAddr) //nolint:errcheck
+	c.conn.WriteToUDP(disc, c.remoteAddr) //nolint:errcheck
 	close(c.stopCh)
 	err := c.conn.Close()
 	c.conn = nil
@@ -157,17 +184,30 @@ func (c *Client) Disconnect() error {
 
 func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	c.mu.Lock()
+	// Generate a new stream ID for each transmission so the reflector
+	// treats it as a distinct voice stream.
+	c.streamID = nextStreamID()
 	conn, addr, sid := c.conn, c.remoteAddr, c.streamID
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dplus: not connected")
 	}
+	log.Printf("dplus: SendHeader streamID=%02X RPT1=%q RPT2=%q MYCALL=%q URCALL=%q",
+		sid, hdr.RPT1, hdr.RPT2, hdr.MyCall, hdr.YourCall)
 	pkt, err := encodeHeader(sid, hdr)
 	if err != nil {
 		return err
 	}
-	_, err = conn.WriteToUDP(pkt, addr)
-	return err
+	log.Printf("dplus: TX header packet (%d bytes):\n%s", len(pkt), hex.Dump(pkt))
+	// Send the header twice for UDP reliability, matching what reflectors do
+	// on the RX path. Some reflector implementations require at least two
+	// header copies before they start forwarding voice frames.
+	for i := 0; i < 2; i++ {
+		if _, err = conn.WriteToUDP(pkt, addr); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) SendFrame(f dstar.DVFrame) error {
@@ -178,8 +218,15 @@ func (c *Client) SendFrame(f dstar.DVFrame) error {
 		return fmt.Errorf("dplus: not connected")
 	}
 	pkt := encodeVoice(sid, f)
-	_, err := conn.WriteToUDP(pkt, addr)
-	return err
+	n, err := conn.WriteToUDP(pkt, addr)
+	if err != nil {
+		log.Printf("dplus: TX voice write error: %v", err)
+		return err
+	}
+	if n != len(pkt) {
+		log.Printf("dplus: TX voice short write: %d/%d bytes", n, len(pkt))
+	}
+	return nil
 }
 
 func (c *Client) RxHeaders() <-chan dstar.DVHeader { return c.hdrCh }
@@ -209,17 +256,51 @@ func (c *Client) rxLoop() {
 		if n < 2 {
 			continue
 		}
-		pktLen := int(binary.LittleEndian.Uint16(buf[0:2]))
-		if pktLen < 2 || pktLen > n {
+		// Count and occasionally log keepalives; log everything else.
+		if n == 3 && buf[0] == 0x03 && buf[1] == 0x60 {
+			c.mu.Lock()
+			c.rxKeepaliveCount++
+			cnt := c.rxKeepaliveCount
+			c.mu.Unlock()
+			if cnt == 1 || cnt%20 == 0 {
+				log.Printf("dplus: RX keepalive #%d", cnt)
+			}
 			continue
 		}
-		payload := buf[2:pktLen]
+		// Log ALL non-keepalive inbound packets for debugging.
+		show := n
+		if show > 64 {
+			show = 64
+		}
+		log.Printf("dplus: RX packet (%d bytes, byte[0]=0x%02X byte[1]=0x%02X):\n%s",
+			n, buf[0], buf[1], hex.Dump(buf[:show]))
 
-		hdr, frm, err := parsePacket(payload)
+		// Parse DSVT data packets (byte[1] = 0x80).
+		hdr, frm, err := parsePacket(buf[:n])
 		if err != nil {
+			log.Printf("dplus: parse error: %v", err)
 			continue
 		}
 		if hdr != nil {
+			// Extract stream ID (bytes 14-15) for deduplication.
+			// The reflector re-sends headers periodically (~every 420ms)
+			// throughout a transmission. Only forward the FIRST header per
+			// stream to avoid resetting the radio's voice decoder.
+			var sid [2]byte
+			if n >= 16 {
+				copy(sid[:], buf[14:16])
+			}
+			c.mu.Lock()
+			dup := c.rxStreamActive && sid == c.rxStreamID
+			if !dup {
+				c.rxStreamID = sid
+				c.rxStreamActive = true
+				log.Printf("dplus: new RX stream %02X — forwarding header", sid)
+			}
+			c.mu.Unlock()
+			if dup {
+				continue // suppress duplicate header
+			}
 			select {
 			case c.hdrCh <- *hdr:
 			default:
@@ -227,6 +308,11 @@ func (c *Client) rxLoop() {
 			}
 		}
 		if frm != nil {
+			if frm.End {
+				c.mu.Lock()
+				c.rxStreamActive = false
+				c.mu.Unlock()
+			}
 			select {
 			case c.frmCh <- *frm:
 			default:

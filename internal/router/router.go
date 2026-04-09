@@ -3,6 +3,7 @@
 package router
 
 import (
+	"log"
 	"sync"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
@@ -31,6 +32,17 @@ type Config struct {
 	// DropTXWhenDisconnected silently drops outbound frames when the reflector
 	// link is not in StateConnected.
 	DropTXWhenDisconnected bool
+
+	// MyCall is the local 8-char callsign with module suffix (e.g. "KR4GCQ D").
+	// Used to rewrite RPT1 in outbound headers.
+	MyCall string
+
+	// ReflectorModule is the target module on the reflector (e.g. 'C').
+	ReflectorModule byte
+
+	// ReflectorCall is the reflector's D-STAR callsign (e.g. "REF001").
+	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
+	ReflectorCall string
 }
 
 // Router routes DV frames between a radio and a reflector.
@@ -39,9 +51,10 @@ type Router struct {
 	reflector protocol.Reflector
 	cfg       Config
 
-	eventCh chan Event
-	stopCh  chan struct{}
-	once    sync.Once
+	eventCh      chan Event
+	stopCh       chan struct{}
+	once         sync.Once
+	txFrameCount int // diagnostic counter for TX voice frames per transmission
 }
 
 // New creates a Router.  Call Start to begin routing.
@@ -71,6 +84,33 @@ func (rt *Router) Stop() {
 	close(rt.stopCh)
 }
 
+// rewriteHeaderForReflector rewrites the routing fields in a header received
+// from the radio before forwarding to the reflector. The radio sends headers
+// with RPT1/RPT2 set to "DIRECT  " (or local repeater); the reflector needs
+// proper gateway routing to register the transmission.
+func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
+	if rt.cfg.MyCall == "" {
+		return
+	}
+	// RPT1 = local gateway callsign (e.g. "KR4GCQ G").
+	// Per ircddbGateway DPlusHandler: header.setRepeaters(m_callsign, m_reflector)
+	// where m_callsign is the local gateway call used as RPT1.
+	rpt1 := []byte(dstar.PadCallsign(rt.cfg.MyCall, 8))
+	rpt1[7] = 'G'
+	hdr.RPT1 = string(rpt1)
+	// RPT2 = reflector callsign + module (e.g. "REF001 C").
+	// The reflector validates that RPT2 matches its own callsign.
+	rpt2 := []byte(dstar.PadCallsign(rt.cfg.ReflectorCall, 8))
+	rpt2[7] = rt.cfg.ReflectorModule
+	hdr.RPT2 = string(rpt2)
+	// URCALL = "CQCQCQ  " for a general call
+	hdr.YourCall = dstar.CQCall
+	// Flag1 = 0x00 for a forwarded (not TX-direction) header
+	hdr.Flag1 = 0x00
+	log.Printf("router: rewrite header for reflector: RPT1=%q RPT2=%q URCALL=%q MYCALL=%q",
+		hdr.RPT1, hdr.RPT2, hdr.YourCall, hdr.MyCall)
+}
+
 // txLoop reads from the radio and forwards to the reflector (TX path).
 func (rt *Router) txLoop() {
 	for {
@@ -84,6 +124,7 @@ func (rt *Router) txLoop() {
 			if rt.cfg.DropTXWhenDisconnected && rt.reflector.State() != protocol.StateConnected {
 				continue
 			}
+			rt.rewriteHeaderForReflector(&hdr)
 			if err := rt.reflector.SendHeader(hdr); err != nil {
 				rt.emit(Event{Direction: DirTX, Err: err})
 				continue
@@ -97,6 +138,14 @@ func (rt *Router) txLoop() {
 			}
 			if rt.cfg.DropTXWhenDisconnected && rt.reflector.State() != protocol.StateConnected {
 				continue
+			}
+			rt.txFrameCount++
+			if rt.txFrameCount == 1 {
+				log.Printf("router: first TX voice frame (seq=%d)", frm.Seq)
+			}
+			if frm.End {
+				log.Printf("router: TX end-of-stream (seq=%d, total frames=%d)", frm.Seq, rt.txFrameCount)
+				rt.txFrameCount = 0
 			}
 			if err := rt.reflector.SendFrame(frm); err != nil {
 				rt.emit(Event{Direction: DirTX, Err: err})
@@ -118,6 +167,8 @@ func (rt *Router) rxLoop() {
 			if !ok {
 				return
 			}
+			log.Printf("router: RX header from reflector: MYCALL=%q URCALL=%q RPT1=%q RPT2=%q",
+				hdr.MyCall, hdr.YourCall, hdr.RPT1, hdr.RPT2)
 			if rt.radio.IsOpen() {
 				rt.radio.SendHeader(hdr) //nolint:errcheck
 			}

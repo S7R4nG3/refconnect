@@ -5,17 +5,18 @@ package radio
 
 import (
 	"github.com/S7R4nG3/refconnect/internal/dstar"
-	"go.bug.st/serial"
 )
 
 // Config holds the parameters needed to open a serial port.
+// StopBits: 1 = one stop bit (default), 2 = two stop bits.
+// Parity: "N" = none (default), "E" = even, "O" = odd.
 type Config struct {
 	Port      string
 	BaudRate  int
 	DataBits  int
-	StopBits  serial.StopBits
-	Parity    serial.Parity
-	PTTViaRTS bool // assert RTS pin for PTT when true
+	StopBits  int    // 1 or 2
+	Parity    string // "N", "E", or "O"
+	PTTViaRTS bool   // assert RTS pin for PTT when true
 }
 
 // RadioInterface is the contract between the serial layer and the router.

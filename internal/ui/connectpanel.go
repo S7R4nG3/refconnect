@@ -23,7 +23,7 @@ type reflectorType struct {
 var reflectorTypes = []reflectorType{
 	{"XRF", protocol.ProtoDExtra, 30001, "openquad.net"},
 	{"REF", protocol.ProtoDPlus, 20001, "dstargateway.org"},
-	{"XLX", protocol.ProtoXLX, 30001, "xlxreflector.org"},
+	{"XLX", protocol.ProtoDExtra, 30001, "xlxreflector.org"},
 }
 
 func reflectorTypeByPrefix(prefix string) reflectorType {
@@ -89,14 +89,15 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	moduleSelect := widget.NewSelect(modules, nil)
 	moduleSelect.SetSelected("C")
 
-	suffixOptions := make([]string, 26)
-	for i := range suffixOptions {
-		suffixOptions[i] = string(rune('A' + i))
+	suffixOptions := make([]string, 27)
+	suffixOptions[0] = " " // empty/space — matches bare callsign registration
+	for i := 0; i < 26; i++ {
+		suffixOptions[i+1] = string(rune('A' + i))
 	}
 	suffixSelect := widget.NewSelect(suffixOptions, nil)
 	suffixSelect.SetSelected(a.cfg.CallsignSuffix)
 	if suffixSelect.Selected == "" {
-		suffixSelect.SetSelected("A")
+		suffixSelect.SetSelected(" ")
 	}
 
 	callsignEntry := widget.NewEntry()
