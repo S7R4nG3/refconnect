@@ -29,7 +29,7 @@ func buildMainWindow(a *App) fyne.CanvasObject {
 	connect := buildConnectPanel(a)
 	status := buildStatusPanel(a)
 	ptt := buildPTTPanel(a)
-	log := buildLogPanel(a)
+	logContent, logToggleBtn := buildLogPanel(a)
 
 	top := container.NewHSplit(
 		container.NewPadded(connect),
@@ -45,10 +45,14 @@ func buildMainWindow(a *App) fyne.CanvasObject {
 		a.fyneApp.OpenURL(repoURL)
 	})
 
-	footer := container.NewHBox(
-		widget.NewLabel("© Dave Streng (KR4GCQ)"),
-		ghBtn,
-	)
+	qrzURL := parseURL("https://www.qrz.com/db/KR4GCQ")
 
-	return container.NewBorder(nil, container.NewVBox(container.NewPadded(log), container.NewCenter(footer)), nil, nil, top)
+	centeredNotice := container.NewCenter(container.NewHBox(
+		widget.NewLabel("© 2026 Dave Streng"),
+		widget.NewHyperlink("KR4GCQ", qrzURL),
+		ghBtn,
+	))
+	footer := container.NewBorder(nil, nil, nil, logToggleBtn, centeredNotice)
+
+	return container.NewBorder(nil, container.NewVBox(logContent, footer), nil, nil, top)
 }

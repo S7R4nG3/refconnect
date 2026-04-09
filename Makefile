@@ -5,6 +5,9 @@ LDFLAGS = -ldflags="-extldflags=-Wl,-no_warn_duplicate_libraries"
 
 .PHONY: run build bundle icons-windows clean
 
+linux-packages:
+	sudo apt install -y libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libxxf86vm-dev
+
 build:
 	@go build $(LDFLAGS) -o $(BINARY) .
 
@@ -40,5 +43,4 @@ clean:
 	@rm -rf $(APP)
 
 test: build
-	@echo "" > refconnect.log
 	@./$(BINARY)

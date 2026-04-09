@@ -7,9 +7,10 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// buildLogPanel returns a collapsible log view. The log is hidden by default
-// and revealed when the user clicks the "Logs" button.
-func buildLogPanel(a *App) fyne.CanvasObject {
+// buildLogPanel returns the scrollable log content (hidden by default) and a
+// small toggle button intended for placement in the window footer. Clicking
+// the button shows or hides the log content.
+func buildLogPanel(a *App) (content fyne.CanvasObject, toggleBtn *widget.Button) {
 	list := widget.NewListWithData(
 		a.logLines,
 		func() fyne.CanvasObject {
@@ -25,13 +26,18 @@ func buildLogPanel(a *App) fyne.CanvasObject {
 	logContent.SetMinSize(fyne.NewSize(0, 200))
 	logContent.Hide()
 
-	toggleBtn := widget.NewButton("Logs", func() {
+	const logHeight float32 = 200
+
+	btn := widget.NewButton("Logs", func() {
+		sz := a.win.Canvas().Size()
 		if logContent.Visible() {
 			logContent.Hide()
+			a.win.Resize(fyne.NewSize(sz.Width, sz.Height-logHeight))
 		} else {
 			logContent.Show()
+			a.win.Resize(fyne.NewSize(sz.Width, sz.Height+logHeight))
 		}
 	})
 
-	return container.NewBorder(toggleBtn, nil, nil, nil, logContent)
+	return logContent, btn
 }

@@ -48,6 +48,16 @@ type UIConfig struct {
 	WindowHeight float32 `yaml:"window_height"`
 }
 
+// LogDir returns the directory where timestamped log files are stored.
+// It is a "Logs" subdirectory beside the config file.
+func LogDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "Logs"), nil
+}
+
 // Dir returns the platform config directory for refconnect.
 func Dir() (string, error) {
 	base := os.Getenv("XDG_CONFIG_HOME")

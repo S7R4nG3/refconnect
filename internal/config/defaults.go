@@ -16,13 +16,6 @@ func Default() *Config {
 		},
 		Reflectors: []ReflectorEntry{
 			{
-				Name:     "XRF757 A",
-				Host:     "xrf757.openquad.net",
-				Port:     30001,
-				Module:   "A",
-				Protocol: "DExtra",
-			},
-			{
 				Name:     "REF001 C",
 				Host:     "ref001.dstargateway.org",
 				Port:     20001,

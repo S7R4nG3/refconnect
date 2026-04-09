@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -130,11 +131,20 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 
 	updateHost()
 
-	connectBtn := widget.NewButton("Connect", nil)
-	disconnectBtn := widget.NewButton("Disconnect", nil)
-	disconnectBtn.Disable()
+	var connected atomic.Bool
+	toggleBtn := widget.NewButton("Connect", nil)
 
-	connectBtn.OnTapped = func() {
+	toggleBtn.OnTapped = func() {
+		if connected.Load() {
+			toggleBtn.Disable()
+			a.disconnect()
+			a.closeRadio()
+			connected.Store(false)
+			toggleBtn.SetText("Connect")
+			toggleBtn.Enable()
+			return
+		}
+
 		id := strings.TrimSpace(idEntry.Text)
 		module := moduleSelect.Selected
 
@@ -144,6 +154,10 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		}
 		if module == "" {
 			a.appendLog("Please select a module.")
+			return
+		}
+		if a.cfg.Radio.Port == "" || a.cfg.Radio.Port == "(no ports found)" {
+			a.appendLog("No serial port selected.")
 			return
 		}
 
@@ -165,15 +179,18 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			Protocol: string(selectedType.proto),
 		}
 
-		connectBtn.Disable()
-		disconnectBtn.Enable()
-		a.connect(entry)
-	}
-
-	disconnectBtn.OnTapped = func() {
-		a.disconnect()
-		connectBtn.Enable()
-		disconnectBtn.Disable()
+		toggleBtn.Disable()
+		go func() {
+			a.openRadio(a.cfg.Radio.Port)
+			if a.radio == nil || !a.radio.IsOpen() {
+				toggleBtn.Enable()
+				return
+			}
+			a.connect(entry)
+			connected.Store(true)
+			toggleBtn.SetText("Disconnect")
+			toggleBtn.Enable()
+		}()
 	}
 
 	return container.NewVBox(
@@ -186,6 +203,6 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			widget.NewLabel("Module:"), moduleSelect,
 			widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
 		),
-		container.NewGridWithColumns(2, connectBtn, disconnectBtn),
+		toggleBtn,
 	)
 }

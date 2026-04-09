@@ -179,6 +179,9 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
+	close(c.hdrCh)
+	close(c.frmCh)
+	close(c.eventCh)
 	return err
 }
 

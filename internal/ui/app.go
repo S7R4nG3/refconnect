@@ -62,6 +62,7 @@ func Run(cfg *config.Config) {
 	a.fyneApp.Settings().SetTheme(&refconnectTheme{})
 
 	a.win = a.fyneApp.NewWindow("RefConnect — D-STAR Reflector Client")
+	a.win.SetIcon(resourceAntennaPng)
 	a.win.SetContent(buildMainWindow(a))
 	// Resize must be called after SetContent so Fyne can reconcile the
 	// requested size against the content's minimum size.

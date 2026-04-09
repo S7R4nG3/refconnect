@@ -79,9 +79,16 @@ func (rt *Router) Start() {
 	})
 }
 
-// Stop signals the routing goroutines to exit.
+// Stop signals the routing goroutines to exit and closes the event channel
+// so consumers (UI) unblock.
 func (rt *Router) Stop() {
-	close(rt.stopCh)
+	select {
+	case <-rt.stopCh:
+		return // already stopped
+	default:
+		close(rt.stopCh)
+	}
+	close(rt.eventCh)
 }
 
 // rewriteHeaderForReflector rewrites the routing fields in a header received
@@ -190,6 +197,8 @@ func (rt *Router) rxLoop() {
 
 func (rt *Router) emit(e Event) {
 	select {
+	case <-rt.stopCh:
+		return // stopped; eventCh is closed
 	case rt.eventCh <- e:
 	default: // drop if UI is not consuming fast enough
 	}

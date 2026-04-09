@@ -11,15 +11,20 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// buildPTTPanel returns the serial port selector, baud rate field, and open/close buttons.
+var commonBaudRates = []string{"1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800"}
+
+// buildPTTPanel returns the serial port and baud rate selectors.
+// Port and baud selections are written back to a.cfg.Radio immediately on change
+// so that the reflector Connect button can open the radio with current values.
 func buildPTTPanel(a *App) fyne.CanvasObject {
 	ports, _ := serial.GetPortsList()
 	if len(ports) == 0 {
 		ports = []string{"(no ports found)"}
 	}
 
-	// Pre-select the configured port if it appears in the list.
-	portSelect := widget.NewSelect(ports, nil)
+	portSelect := widget.NewSelect(ports, func(p string) {
+		a.cfg.Radio.Port = p
+	})
 	for _, p := range ports {
 		if p == a.cfg.Radio.Port {
 			portSelect.SetSelected(p)
@@ -28,40 +33,19 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	}
 	if portSelect.Selected == "" && len(ports) > 0 {
 		portSelect.SetSelected(ports[0])
+		a.cfg.Radio.Port = ports[0]
 	}
 
-	baudEntry := widget.NewEntry()
-	baudEntry.SetText(fmt.Sprintf("%d", a.cfg.Radio.BaudRate))
-	baudEntry.SetPlaceHolder("9600")
-
-	connectBtn := widget.NewButton("Connect", nil)
-
-	connectBtn.OnTapped = func() {
-		if a.radio != nil && a.radio.IsOpen() {
-			a.closeRadio()
-			connectBtn.SetText("Connect")
-			return
+	currentBaud := fmt.Sprintf("%d", a.cfg.Radio.BaudRate)
+	baudSelect := widget.NewSelect(commonBaudRates, func(s string) {
+		if b, err := strconv.Atoi(s); err == nil && b > 0 {
+			a.cfg.Radio.BaudRate = b
 		}
-		port := portSelect.Selected
-		if port == "" || port == "(no ports found)" {
-			a.appendLog("No serial port selected.")
-			return
-		}
-		baud, err := strconv.Atoi(baudEntry.Text)
-		if err != nil || baud <= 0 {
-			a.appendLog("Invalid baud rate.")
-			return
-		}
-		a.cfg.Radio.Port = port
-		a.cfg.Radio.BaudRate = baud
-		connectBtn.Disable()
-		go func() {
-			a.openRadio(port)
-			if a.radio != nil && a.radio.IsOpen() {
-				connectBtn.SetText("Disconnect")
-			}
-			connectBtn.Enable()
-		}()
+	})
+	baudSelect.SetSelected(currentBaud)
+	if baudSelect.Selected == "" {
+		baudSelect.SetSelected("38400")
+		a.cfg.Radio.BaudRate = 38400
 	}
 
 	return container.NewVBox(
@@ -69,8 +53,7 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		portSelect,
 		container.NewGridWithColumns(2,
 			widget.NewLabel("Baud Rate"),
-			baudEntry,
+			baudSelect,
 		),
-		connectBtn,
 	)
 }

@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,7 @@ type Client struct {
 	state        atomic.Int32
 	eventCh      chan Event
 	sendCh       chan string  // outbound IRC lines queued by AnnounceUser
+	stopMu       sync.Mutex
 	stopCh       chan struct{}
 	registeredCh chan struct{} // closed once StateRegistered is first reached
 }
@@ -110,12 +112,16 @@ func New(callsign string) *Client {
 
 // Start launches the background registration loop. Call once.
 func (c *Client) Start() {
+	c.stopMu.Lock()
 	c.stopCh = make(chan struct{})
+	c.stopMu.Unlock()
 	go c.loop()
 }
 
-// Stop shuts down the background loop cleanly.
+// Stop shuts down the background loop cleanly. Safe to call concurrently.
 func (c *Client) Stop() {
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
 	if c.stopCh == nil {
 		return
 	}
@@ -124,6 +130,7 @@ func (c *Client) Stop() {
 	default:
 		close(c.stopCh)
 	}
+	c.stopCh = nil
 }
 
 // State returns the current registration state.

@@ -9,7 +9,7 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 ## Features
 
 - Multi-OS Support! (Linux/MacOS/Windows)
-- Connect to XRF, REF, and XLX reflectors
+- Connect to REF reflectors (DCS/XRF/XLX still in progress...)
 - Serial port integration with D-STAR radios
 - Saved reflector profiles with last-used memory
 - Dark, light, or system theme support
@@ -27,19 +27,31 @@ TODO:
 - macOS, Windows, or Linux
 - A D-STAR capable radio connected via serial port
 
-## Tested Radios
+## Simple Setup
+
+MacOs & Linux:
+
+```shell
+curl -fsSL https://raw.githubusercontent.com/S7R4nG3/refconnect/main/configs/setup.sh | sh
+```
+
+Windows:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/S7R4nG3/refconnect/main/configs/setup.ps1 | iex
+```
+
+## Radios
+
+Tested on:
 
 - ICOM IC-705
 
 ## Building
 
-Requires make, git, and go 1.22+
+Need make, git, and go 1.26+
 
-```bash
-git clone https://github.com/S7R4nG3/refconnect.git
-cd refconnect/
-
-# Build binary
+```shell
 make build
 ```
 
@@ -95,3 +107,5 @@ The log panel shows timestamped activity including connections, heard callsigns,
 See [LICENSE](LICENSE).
 
 ©️ 2026 Dave Streng (KR4GCQ)
+
+This project is supported by me alone... Feel free to [Donate](https://www.paypal.com/donate/?hosted_button_id=J3YVE7V6F8NN2) if you're feeling generous! :)

@@ -24,12 +24,12 @@ jobs:
         run: go build -ldflags="-s -w" -o refconnect .
 
       - name: Package
-        run: tar -czf refconnect-linux-amd64.tar.gz refconnect
+        run: tar -czf refconnect_linux_amd64.tar.gz refconnect
 
       - uses: actions/upload-artifact@v4
         with:
-          name: refconnect-linux-amd64
-          path: refconnect-linux-amd64.tar.gz
+          name: refconnect_linux_amd64
+          path: refconnect_linux_amd64.tar.gz
 
   build-linux-arm64:
     name: Build Linux (arm64)
@@ -49,12 +49,12 @@ jobs:
         run: go build -ldflags="-s -w" -o refconnect .
 
       - name: Package
-        run: tar -czf refconnect-linux-arm64.tar.gz refconnect
+        run: tar -czf refconnect_linux_arm64.tar.gz refconnect
 
       - uses: actions/upload-artifact@v4
         with:
-          name: refconnect-linux-arm64
-          path: refconnect-linux-arm64.tar.gz
+          name: refconnect_linux_arm64
+          path: refconnect_linux_arm64.tar.gz
 
   build-macos:
     name: Build macOS (arm64)
@@ -95,12 +95,12 @@ jobs:
         run: codesign --force --deep --sign - RefConnect.app
 
       - name: Package
-        run: zip -r RefConnect-macOS-arm64.zip RefConnect.app
+        run: zip -r refconnect_darwin_arm64.zip RefConnect.app
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RefConnect-macOS-arm64
-          path: RefConnect-macOS-arm64.zip
+          name: refconnect_darwin_arm64
+          path: refconnect_darwin_arm64.zip
 
   build-macos-amd64:
     name: Build macOS (amd64)
@@ -146,12 +146,12 @@ jobs:
         run: codesign --force --deep --sign - RefConnect.app
 
       - name: Package
-        run: zip -r RefConnect-macOS-amd64.zip RefConnect.app
+        run: zip -r refconnect_darwin_amd64.zip RefConnect.app
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RefConnect-macOS-amd64
-          path: RefConnect-macOS-amd64.zip
+          name: refconnect_darwin_amd64
+          path: refconnect_darwin_amd64.zip
 
   build-windows:
     name: Build Windows (amd64)
@@ -177,12 +177,12 @@ jobs:
         run: go build -ldflags="-s -w -H=windowsgui" -o refconnect.exe .
 
       - name: Package
-        run: Compress-Archive -Path refconnect.exe -DestinationPath RefConnect-windows-amd64.zip
+        run: Compress-Archive -Path refconnect.exe -DestinationPath refconnect_windows_amd64.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RefConnect-windows-amd64
-          path: RefConnect-windows-amd64.zip
+          name: refconnect_windows_amd64
+          path: refconnect_windows_amd64.zip
 
   release:
     name: Create Release
