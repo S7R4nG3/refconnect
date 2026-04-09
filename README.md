@@ -15,6 +15,13 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 - Dark, light, or system theme support
 - Timestamped activity log
 
+TODO:
+
+- DCS, XRF, XLX reflector support (REF is working via DPlus)
+- Simple shell install script
+- Simple user guide
+- Troubleshooting steps + support
+
 ## Requirements
 
 - macOS, Windows, or Linux
