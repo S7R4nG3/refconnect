@@ -71,7 +71,7 @@ Reflector profiles can be added to the `reflectors` list and selected from the C
 2. **Enter your callsign** — Set your callsign and gateway module suffix in the Connect panel.
 3. **Click Connect** — The status panel will update once the link is established.
 4. **Open your radio** — Select the serial port from the PTT panel and click **Open**.
-5. **Transmit** — Press the PTT button or tap the spacebar to key up. Release to unkey.
+5. **Transmit** — Key up on your radio! Welcome to DStar!
 
 The log panel shows timestamped activity including connections, heard callsigns, and errors.
 
