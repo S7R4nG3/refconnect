@@ -8,6 +8,7 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 
 ## Features
 
+- Multi-OS Support! (Linux/MacOS/Windows)
 - Connect to XRF, REF, and XLX reflectors
 - Serial port integration with D-STAR radios
 - Saved reflector profiles with last-used memory
@@ -19,11 +20,18 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 - macOS, Windows, or Linux
 - A D-STAR capable radio connected via serial port
 
+## Tested Radios
+
+- ICOM IC-705
+
 ## Building
 
-Requires Go 1.22+
+Requires make, git, and go 1.22+
 
 ```bash
+git clone https://github.com/S7R4nG3/refconnect.git
+cd refconnect/
+
 # Build binary
 make build
 ```
