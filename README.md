@@ -10,8 +10,6 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 
 - Connect to XRF, REF, and XLX reflectors
 - Serial port integration with D-STAR radios
-- PTT control via RTS line or on-screen button (spacebar shortcut)
-- Automatic callsign registration via ircDDB
 - Saved reflector profiles with last-used memory
 - Dark, light, or system theme support
 - Timestamped activity log
@@ -19,20 +17,15 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 ## Requirements
 
 - macOS, Windows, or Linux
-- Go 1.22+
 - A D-STAR capable radio connected via serial port
 
 ## Building
 
+Requires Go 1.22+
+
 ```bash
 # Build binary
 make build
-
-# Build and bundle as a macOS .app
-make bundle
-
-# Build, bundle, and launch
-make run
 ```
 
 ## Configuration
@@ -46,13 +39,28 @@ On first launch, a default configuration is created at:
 Key settings:
 
 ```yaml
-callsign: "N0CALL  "       # Your amateur radio callsign (8 chars, space-padded)
+version: 1
+callsign: N0CALL
+callsign_suffix: ' '
 radio:
-  port: "/dev/ttyUSB0"     # Serial port for your radio
-  baud_rate: 115200
-  ptt_via_rts: true        # PTT via RTS serial line
+    port: /dev/cu.usbmodem1203
+    baud_rate: 38400
+    data_bits: 8
+    stop_bits: 1
+    parity: "N"
+    ptt_via_rts: false
+reflectors:
+    - name: REF001 C
+      host: ref001.dstargateway.org
+      port: 20001
+      module: C
+      protocol: DPlus
+last_used_reflector: "REF001 C"
 ui:
-  theme: "system"          # dark, light, or system
+    theme: system
+    log_max_lines: 500
+    window_width: 960
+    window_height: 720
 ```
 
 Reflector profiles can be added to the `reflectors` list and selected from the Connect panel on launch.
@@ -70,3 +78,5 @@ The log panel shows timestamped activity including connections, heard callsigns,
 ## License
 
 See [LICENSE](LICENSE).
+
+©️ 2026 Dave Streng (KR4GCQ)

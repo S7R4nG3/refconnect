@@ -68,6 +68,8 @@ func buildStatusPanel(a *App) fyne.CanvasObject {
 		heardLabel,
 		container.NewGridWithColumns(2,
 			widget.NewLabel("RX:"), rxIndicator,
+		),
+		container.NewGridWithColumns(2,
 			widget.NewLabel("TX:"), txIndicator,
 		),
 	)

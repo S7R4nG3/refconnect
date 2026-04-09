@@ -1,10 +1,18 @@
 package ui
 
 import (
+	"net/url"
+
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
 
 	"fyne.io/fyne/v2"
 )
+
+func parseURL(raw string) *url.URL {
+	u, _ := url.Parse(raw)
+	return u
+}
 
 // buildMainWindow assembles the full window content from the four panels.
 //
@@ -32,5 +40,15 @@ func buildMainWindow(a *App) fyne.CanvasObject {
 	)
 	top.SetOffset(0.6)
 
-	return container.NewBorder(nil, container.NewPadded(log), nil, nil, top)
+	repoURL := parseURL("https://github.com/S7R4nG3/refconnect")
+	ghBtn := widget.NewButtonWithIcon("", resourceGithubMarkSvg, func() {
+		a.fyneApp.OpenURL(repoURL)
+	})
+
+	footer := container.NewHBox(
+		widget.NewLabel("© Dave Streng (KR4GCQ)"),
+		ghBtn,
+	)
+
+	return container.NewBorder(nil, container.NewVBox(container.NewPadded(log), container.NewCenter(footer)), nil, nil, top)
 }

@@ -31,6 +31,31 @@ jobs:
           name: refconnect-linux-amd64
           path: refconnect-linux-amd64.tar.gz
 
+  build-linux-arm64:
+    name: Build Linux (arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+
+      - name: Build
+        run: go build -ldflags="-s -w" -o refconnect .
+
+      - name: Package
+        run: tar -czf refconnect-linux-arm64.tar.gz refconnect
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: refconnect-linux-arm64
+          path: refconnect-linux-arm64.tar.gz
+
   build-macos:
     name: Build macOS (arm64)
     runs-on: macos-latest
@@ -161,7 +186,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-linux, build-macos, build-macos-amd64, build-windows]
+    needs: [build-linux, build-linux-arm64, build-macos, build-macos-amd64, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

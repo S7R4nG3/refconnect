@@ -34,11 +34,14 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	baudEntry.SetText(fmt.Sprintf("%d", a.cfg.Radio.BaudRate))
 	baudEntry.SetPlaceHolder("9600")
 
-	openBtn := widget.NewButton("Open", nil)
-	closeBtn := widget.NewButton("Close", nil)
-	closeBtn.Disable()
+	connectBtn := widget.NewButton("Connect", nil)
 
-	openBtn.OnTapped = func() {
+	connectBtn.OnTapped = func() {
+		if a.radio != nil && a.radio.IsOpen() {
+			a.closeRadio()
+			connectBtn.SetText("Connect")
+			return
+		}
 		port := portSelect.Selected
 		if port == "" || port == "(no ports found)" {
 			a.appendLog("No serial port selected.")
@@ -51,20 +54,14 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		}
 		a.cfg.Radio.Port = port
 		a.cfg.Radio.BaudRate = baud
-		openBtn.Disable()
+		connectBtn.Disable()
 		go func() {
 			a.openRadio(port)
-			if a.radio == nil || !a.radio.IsOpen() {
-				openBtn.Enable()
-			} else {
-				closeBtn.Enable()
+			if a.radio != nil && a.radio.IsOpen() {
+				connectBtn.SetText("Disconnect")
 			}
+			connectBtn.Enable()
 		}()
-	}
-	closeBtn.OnTapped = func() {
-		a.closeRadio()
-		openBtn.Enable()
-		closeBtn.Disable()
 	}
 
 	return container.NewVBox(
@@ -74,6 +71,6 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 			widget.NewLabel("Baud Rate"),
 			baudEntry,
 		),
-		container.NewGridWithColumns(2, openBtn, closeBtn),
+		connectBtn,
 	)
 }

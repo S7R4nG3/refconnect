@@ -65,7 +65,7 @@ func Run(cfg *config.Config) {
 	a.win.SetContent(buildMainWindow(a))
 	// Resize must be called after SetContent so Fyne can reconcile the
 	// requested size against the content's minimum size.
-	a.win.Resize(fyne.NewSize(cfg.UI.WindowWidth, cfg.UI.WindowHeight))
+	a.win.Resize(fyne.NewSize(cfg.UI.WindowWidth, 0))
 	a.win.SetMaster()
 	a.win.SetOnClosed(func() {
 		a.shutdown()
