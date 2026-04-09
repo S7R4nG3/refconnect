@@ -1,22 +1,18 @@
 # RefConnect Protocol Reference
 
-This document captures everything known about the protocols used by RefConnect, derived from source code, pcap analysis, and the D-STAR specification. Pcaps are in `diagnostics/pcaps/`:
-
-- `radio-comm.pcapng` — original capture, used for initial reverse engineering
-- `doozy-cap.pcapng` — capture of Doozy (Windows app) talking to a working IC-705; used to verify and correct the implementation (2026-04-01)
-- `rsms3w.pcapng` — capture of RS-MS3W (Windows) connecting to URF621A via IC-705; revealed 38400 baud and FF FF FF init sequence (2026-04-08)
+This document captures everything known about the protocols used by RefConnect, derived from source code, pcap analysis, and the D-STAR specification.
 
 ---
 
 ## 1. Hardware Connection — Icom IC-705
 
-> **Confirmed by Doozy pcap analysis (2026-04-01).** The IC-705 USB-B uses an internal Prolific PL2303 chip (VID/PID `0x0c26:0x0036`). The DV Gateway Terminal protocol works over **USB-B** — no external adapter is needed.
+The IC-705 USB-B uses an internal Prolific PL2303 chip (VID/PID `0x0c26:0x0036`). The DV Gateway Terminal protocol works over **USB-B** — no external adapter is needed.
 
 ```
 IC-705 ──► USB-B cable ──► Host USB
 ```
 
-**Serial parameters:** **38400 baud**, 8 data bits, no parity, 1 stop bit (8N1). The RS-MS3W pcap confirms SET_LINE_CODING(38400) on the DV CDC interface. Although baud rate is nominally virtual on USB-CDC, the IC-705 firmware may use the SET_LINE_CODING value to select the DV Gateway Terminal mode — using 115200 or 9600 on macOS results in no response (only `FF` bytes returned).
+**Serial parameters:** **38400 baud**, 8 data bits, no parity, 1 stop bit (8N1). A pcap confirms SET_LINE_CODING(38400) on the DV CDC interface. Although baud rate is nominally virtual on USB-CDC, the IC-705 firmware may use the SET_LINE_CODING value to select the DV Gateway Terminal mode — using 115200 or 9600 on macOS results in no response (only `FF` bytes returned).
 
 ### USB interface layout
 
@@ -29,7 +25,7 @@ The IC-705 presents as a single USB device with **two CDC-ACM virtual serial por
 
 On macOS, the two ports appear as `/dev/cu.usbmodem*1` and `/dev/cu.usbmodem*3` (the suffix digit matches the CDC Data interface number). The **`*3` port is the DV data port**.
 
-**CDC setup required:** The RS-MS3W pcap shows SET_LINE_CODING(38400, 8N1) and SET_CONTROL_LINE_STATE(0) are sent before data transfer begins. On macOS, these are issued by the kernel CDC-ACM driver when the serial port is opened with the corresponding baud rate.
+**CDC setup required:** A pcap shows SET_LINE_CODING(38400, 8N1) and SET_CONTROL_LINE_STATE(0) are sent before data transfer begins. On macOS, these are issued by the kernel CDC-ACM driver when the serial port is opened with the corresponding baud rate.
 
 **Init flush:** Before sending the first poll, RS-MS3W sends `FF FF FF` (3 terminator bytes) on the DV data endpoint. The radio echoes back `FF FF FF`. This clears any partial frame state in the radio's protocol parser. Without this init, macOS gets only single `FF` bytes in response to polls.
 
@@ -41,7 +37,7 @@ On macOS, the two ports appear as `/dev/cu.usbmodem*1` and `/dev/cu.usbmodem*3` 
 
 ## 2. DV Gateway Terminal Serial Protocol
 
-This is the binary framing protocol spoken over the serial link between the host and the IC-705. It was reverse-engineered from USBPcap captures and verified in full against the Doozy pcap.
+This is the binary framing protocol spoken over the serial link between the host and the IC-705. It was reverse-engineered from USBPcap captures and verified in full against another pcap.
 
 ### 2.1 Frame Structure
 
@@ -77,7 +73,7 @@ Every frame follows the same envelope:
 FF FF FF
 ```
 
-Sent once before the first poll. Clears any residual parser state in the radio. The radio echoes back `FF FF FF`. Required on macOS; observed in RS-MS3W pcap (2026-04-08).
+Sent once before the first poll. Clears any residual parser state in the radio. The radio echoes back `FF FF FF`. Required on macOS; observed in pcap (2026-04-08).
 
 ### 2.4 Poll (host → radio) — 3 bytes
 
@@ -156,7 +152,7 @@ The radio sends this after accepting the TX header. Immediately after, a Poll Ac
 | AMBE[9]   | AMBE+2 voice; use `SilenceAMBE = {9E 8D 32 88 26 1A 3F 61 E8}` when no audio |
 | SlowData[3] | Slow-data bytes (scrambled; see §3.3) |
 
-The last frame of a transmission has both seq2 bit 0x40 set and the AMBE/SlowData fields filled with the end-of-stream marker (`55 C8 7A` AMBE, `55 55 55` slow data — as seen in Doozy pcap).
+The last frame of a transmission has both seq2 bit 0x40 set and the AMBE/SlowData fields filled with the end-of-stream marker (`55 C8 7A` AMBE, `55 55 55` slow data — as seen in pcap).
 
 ### 2.11 TX Voice Ack (radio → host) — 5 bytes
 
@@ -204,7 +200,7 @@ Each frame carries 9 bytes of AMBE+2 compressed audio and 3 bytes of slow data. 
 
 **Silence AMBE:** `9E 8D 32 88 26 1A 3F 61 E8` — use this to fill frames when audio is unavailable.
 
-**End-of-stream AMBE:** `55 C8 7A 55 55 55 55 55 55` (as observed in Doozy pcap last TX frames).
+**End-of-stream AMBE:** `55 C8 7A 55 55 55 55 55 55` (as observed in pcap last TX frames).
 
 ### 3.3 Slow Data
 
@@ -228,7 +224,7 @@ Each 3-byte slow-data field uses positions `[seq%20]`, `[(seq+1)%20]`, `[(seq+2)
 
 ### 3.4 D-STAR Header CRC
 
-> **Corrected 2026-04-01.** Verified against Doozy pcap. The prior implementation (MSB-first) was wrong and caused all received headers to fail validation.
+> **Corrected 2026-04-01.** Verified against pcap. The prior implementation (MSB-first) was wrong and caused all received headers to fail validation.
 
 The CRC covers the first 39 bytes of the header (flags + callsigns, not the CRC field itself). It is stored **little-endian** in bytes 39–40.
 
@@ -254,7 +250,7 @@ func crc16CCITT(data []byte) uint16 {
 }
 ```
 
-**Test vector (from Doozy pcap):**
+**Test vector (from pcap):**
 - Input: `00 00 00` + `"DIRECT  DIRECT  CQCQCQ  KR4GCQ  705 "` (39 bytes)
 - CRC: `0x2266` → stored as `66 22`
 
@@ -344,7 +340,7 @@ XLX reflectors are multi-protocol. The XLX client in `internal/protocol/xlx/` im
 
 ## 8. Pcap Evidence Summary
 
-### `doozy-cap.pcapng` observations (2026-04-01)
+### Observations (2026-04-01)
 
 | Observation | Details |
 |-------------|---------|
@@ -357,7 +353,7 @@ XLX reflectors are multi-protocol. The XLX client in `internal/protocol/xlx/` im
 | TX sequence observed | TX header → TX header ack + poll ack (status=1) → 8 TX voice frames → end frame |
 | CRC verification | Header `DIRECT/DIRECT/CQCQCQ/KR4GCQ/705` → CRC = `66 22` ✓ |
 
-### `rsms3w.pcapng` observations (2026-04-08)
+### Observations (2026-04-08)
 
 | Observation | Details |
 |-------------|---------|
