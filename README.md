@@ -18,7 +18,6 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 TODO:
 
 - DCS, XRF, XLX reflector support (REF is working via DPlus)
-- Simple shell install script
 - Simple user guide
 - Troubleshooting steps + support
 
@@ -26,6 +25,10 @@ TODO:
 
 - macOS, Windows, or Linux
 - A D-STAR capable radio connected via serial port
+
+Tested on:
+
+- ICOM IC-705
 
 ## Simple Setup
 
@@ -40,12 +43,6 @@ Windows:
 ```powershell
 iwr -useb https://raw.githubusercontent.com/S7R4nG3/refconnect/main/configs/setup.ps1 | iex
 ```
-
-## Radios
-
-Tested on:
-
-- ICOM IC-705
 
 ## Building
 
