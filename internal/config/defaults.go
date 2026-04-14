@@ -7,13 +7,8 @@ func Default() *Config {
 		Callsign:       "N0CALL",
 		CallsignSuffix: " ",
 		Radio: RadioConfig{
-			Port:      "/dev/ttyUSB0",
-			BaudRate:  38400,
-			DataBits:  8,
-			StopBits:  1,
-			Parity:    "N",
-			PTTViaRTS: false,
-			Protocol:  "DV-GW",
+			Port:     "/dev/ttyUSB0",
+			Protocol: "DV-GW",
 		},
 		Reflectors: []ReflectorEntry{
 			{

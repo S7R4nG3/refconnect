@@ -23,13 +23,8 @@ type Config struct {
 
 // RadioConfig holds serial port settings for the connected radio.
 type RadioConfig struct {
-	Port      string `yaml:"port"`
-	BaudRate  int    `yaml:"baud_rate"`
-	DataBits  int    `yaml:"data_bits"`
-	StopBits  int    `yaml:"stop_bits"`  // 1 = one stop bit, 2 = two stop bits
-	Parity    string `yaml:"parity"`     // "N" = none, "E" = even, "O" = odd
-	PTTViaRTS bool   `yaml:"ptt_via_rts"`
-	Protocol  string `yaml:"protocol"`   // "DV-GW" (ICOM DV Gateway) or "MMDVM" (Kenwood MMDVM)
+	Port     string `yaml:"port"`
+	Protocol string `yaml:"protocol"` // "DV-GW" (ICOM DV Gateway) or "MMDVM" (Kenwood MMDVM)
 }
 
 // ReflectorEntry is a saved reflector connection profile.

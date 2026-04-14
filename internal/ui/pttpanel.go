@@ -12,12 +12,6 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// protocolBaudRates maps config protocol values to their fixed baud rates.
-var protocolBaudRates = map[string]int{
-	"DV-GW": 38400,  // ICOM DV Gateway Terminal
-	"MMDVM": 115200, // Kenwood MMDVM
-}
-
 // radioProtocols maps display labels to config values.
 var radioProtocols = map[string]string{
 	"ICOM (DV Gateway)":  "DV-GW",
@@ -25,8 +19,8 @@ var radioProtocols = map[string]string{
 }
 var radioProtocolLabels = []string{"ICOM (DV Gateway)", "Kenwood (MMDVM)"}
 
-// buildPTTPanel returns the serial port and baud rate selectors.
-// Port and baud selections are written back to a.cfg.Radio immediately on change
+// buildPTTPanel returns the serial port and protocol selectors.
+// Selections are written back to a.cfg.Radio immediately on change
 // so that the reflector Connect button can open the radio with current values.
 func buildPTTPanel(a *App) fyne.CanvasObject {
 	ports, _ := serial.GetPortsList()
@@ -34,13 +28,9 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		ports = []string{"(no ports found)"}
 	}
 
-	// Protocol selector — also sets the baud rate automatically.
 	protoSelect := widget.NewSelect(radioProtocolLabels, func(label string) {
 		if val, ok := radioProtocols[label]; ok {
 			a.cfg.Radio.Protocol = val
-			if baud, ok := protocolBaudRates[val]; ok {
-				a.cfg.Radio.BaudRate = baud
-			}
 		}
 	})
 	// Set current selection from config.
@@ -53,7 +43,6 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	if protoSelect.Selected == "" {
 		protoSelect.SetSelected(radioProtocolLabels[0])
 		a.cfg.Radio.Protocol = "DV-GW"
-		a.cfg.Radio.BaudRate = 38400
 	}
 
 	labeledPorts := labelPorts(ports)

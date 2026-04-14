@@ -9,26 +9,22 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 ## Features
 
 - Multi-OS Support! (Linux/MacOS/Windows)
-- Connect to REF reflectors (DCS/XRF/XLX still in progress...)
-- Serial port integration with D-STAR radios
+- Connect to REF/XRF/XLX reflectors via DPlus/DExtra/XLX protocols
+- Supports ICOM (DV Gateway Terminal) and Kenwood (MMDVM) radio protocols
+- Serial port integration with D-STAR radios via USB
 - Saved reflector profiles with last-used memory
 - Dark, light, or system theme support
 - Timestamped activity log
 
-TODO:
-
-- DCS, XRF, XLX reflector support (REF is working via DPlus)
-- Simple user guide
-- Troubleshooting steps + support
-
 ## Requirements
 
 - macOS, Windows, or Linux
-- A D-STAR capable radio connected via serial port
+- A D-STAR capable radio connected via USB
 
-Tested on:
+Tested radios:
 
-- ICOM IC-705
+- ICOM IC-705 (USB-B, DV Gateway Terminal protocol)
+- Kenwood TH-D75 (USB-C, MMDVM protocol)
 
 ## Simple Setup
 
@@ -68,11 +64,7 @@ callsign: N0CALL
 callsign_suffix: ' '
 radio:
     port: /dev/cu.usbmodem1203
-    baud_rate: 38400
-    data_bits: 8
-    stop_bits: 1
-    parity: "N"
-    ptt_via_rts: false
+    protocol: DV-GW              # "DV-GW" (ICOM) or "MMDVM" (Kenwood)
 reflectors:
     - name: REF001 C
       host: ref001.dstargateway.org
@@ -81,21 +73,28 @@ reflectors:
       protocol: DPlus
 last_used_reflector: "REF001 C"
 ui:
-    theme: system
+    theme: system                # "dark", "light", or "system"
     log_max_lines: 500
     window_width: 960
     window_height: 720
 ```
 
-Reflector profiles can be added to the `reflectors` list and selected from the Connect panel on launch.
+| Field | Description |
+|---|---|
+| `callsign` | Your amateur radio callsign |
+| `callsign_suffix` | Gateway module letter (e.g. `D`), or space for default |
+| `radio.port` | Serial port path for your radio |
+| `radio.protocol` | `DV-GW` for ICOM radios, `MMDVM` for Kenwood radios. Baud rate is set automatically (38400 / 115200) |
+| `reflectors` | Saved reflector profiles, selectable from the Connect panel |
+| `ui.theme` | `dark`, `light`, or `system` |
 
 ## Usage
 
-1. **Select a reflector** — Choose the type (XRF/REF/XLX), enter the reflector ID and domain, and select a module (A–Z).
-2. **Enter your callsign** — Set your callsign and gateway module suffix in the Connect panel.
-3. **Click Connect** — The status panel will update once the link is established.
-4. **Open your radio** — Select the serial port from the PTT panel and click **Open**.
-5. **Transmit** — Key up on your radio! Welcome to DStar!
+1. **Select your radio** — Choose the protocol (ICOM or Kenwood) and serial port in the Radio panel, then click **Open**.
+2. **Select a reflector** — Choose a saved reflector profile or enter a new one in the Connect panel.
+3. **Enter your callsign** — Set your callsign and gateway module suffix.
+4. **Click Connect** — The status panel will update once the link is established.
+5. **Transmit** — Key up on your radio! Welcome to D-STAR!
 
 The log panel shows timestamped activity including connections, heard callsigns, and errors.
 

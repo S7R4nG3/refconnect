@@ -92,27 +92,3 @@ func (m *MockRadio) PTT(on bool) error {
 	return nil
 }
 
-// PTTState returns the current simulated PTT state (useful in tests).
-func (m *MockRadio) PTTState() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.ptt
-}
-
-// InjectHeader pushes a header into the receive channel as if it arrived from hardware.
-// Non-blocking; drops the header if the channel is full.
-func (m *MockRadio) InjectHeader(hdr dstar.DVHeader) {
-	select {
-	case m.hdrCh <- hdr:
-	default:
-	}
-}
-
-// InjectFrame pushes a voice frame into the receive channel as if it arrived from hardware.
-// Non-blocking; drops the frame if the channel is full.
-func (m *MockRadio) InjectFrame(f dstar.DVFrame) {
-	select {
-	case m.frmCh <- f:
-	default:
-	}
-}

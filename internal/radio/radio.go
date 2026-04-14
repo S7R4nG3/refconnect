@@ -8,15 +8,9 @@ import (
 )
 
 // Config holds the parameters needed to open a serial port.
-// StopBits: 1 = one stop bit (default), 2 = two stop bits.
-// Parity: "N" = none (default), "E" = even, "O" = odd.
+// Baud rate is determined by the radio implementation (38400 for DV Gateway, 115200 for MMDVM).
 type Config struct {
-	Port      string
-	BaudRate  int
-	DataBits  int
-	StopBits  int    // 1 or 2
-	Parity    string // "N", "E", or "O"
-	PTTViaRTS bool   // assert RTS pin for PTT when true
+	Port string
 }
 
 // RadioInterface is the contract between the serial layer and the router.
@@ -42,6 +36,5 @@ type RadioInterface interface {
 	RxFrames() <-chan dstar.DVFrame
 
 	// PTT asserts (on=true) or releases (on=false) the push-to-talk signal.
-	// When PTTViaRTS is true in Config, this toggles the RTS serial line.
 	PTT(on bool) error
 }

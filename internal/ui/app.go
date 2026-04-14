@@ -201,12 +201,7 @@ func (a *App) openRadio(portName string) {
 		r = radio.NewSerialRadio()
 	}
 	cfg := radio.Config{
-		Port:      portName,
-		BaudRate:  a.cfg.Radio.BaudRate,
-		DataBits:  a.cfg.Radio.DataBits,
-		StopBits:  a.cfg.Radio.StopBits,
-		Parity:    a.cfg.Radio.Parity,
-		PTTViaRTS: a.cfg.Radio.PTTViaRTS,
+		Port: portName,
 	}
 	if err := r.Open(cfg); err != nil {
 		a.appendLog("Radio open error: " + err.Error())

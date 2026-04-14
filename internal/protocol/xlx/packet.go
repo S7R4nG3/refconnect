@@ -1,6 +1,6 @@
 // Package xlx implements the XLX multi-protocol reflector client.
 //
-// XLX uses its own control protocol on port 30001 (per LX3JL xlxd cxlxprotocol.cpp).
+// XLX uses its own control protocol (per LX3JL xlxd cxlxprotocol.cpp).
 // Voice data uses the DExtra DSVT framing that xlxd expects:
 // 12-byte fixed tag, 2-byte little-endian stream ID, then header/voice payload.
 //

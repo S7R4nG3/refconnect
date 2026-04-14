@@ -53,6 +53,7 @@ type Router struct {
 
 	eventCh      chan Event
 	stopCh       chan struct{}
+	wg           sync.WaitGroup // tracks txLoop + rxLoop
 	once         sync.Once
 	txFrameCount int // diagnostic counter for TX voice frames per transmission
 }
@@ -74,13 +75,14 @@ func (rt *Router) Events() <-chan Event { return rt.eventCh }
 // Start spawns the routing goroutines. It is idempotent.
 func (rt *Router) Start() {
 	rt.once.Do(func() {
+		rt.wg.Add(2)
 		go rt.txLoop() // radio → reflector
 		go rt.rxLoop() // reflector → radio
 	})
 }
 
-// Stop signals the routing goroutines to exit and closes the event channel
-// so consumers (UI) unblock.
+// Stop signals the routing goroutines to exit, waits for them to finish,
+// then closes the event channel so consumers (UI) unblock.
 func (rt *Router) Stop() {
 	select {
 	case <-rt.stopCh:
@@ -88,6 +90,7 @@ func (rt *Router) Stop() {
 	default:
 		close(rt.stopCh)
 	}
+	rt.wg.Wait()
 	close(rt.eventCh)
 }
 
@@ -119,6 +122,7 @@ func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
 
 // txLoop reads from the radio and forwards to the reflector (TX path).
 func (rt *Router) txLoop() {
+	defer rt.wg.Done()
 	for {
 		select {
 		case <-rt.stopCh:
@@ -165,6 +169,7 @@ func (rt *Router) txLoop() {
 
 // rxLoop reads from the reflector and forwards to the radio (RX path).
 func (rt *Router) rxLoop() {
+	defer rt.wg.Done()
 	for {
 		select {
 		case <-rt.stopCh:
@@ -176,7 +181,9 @@ func (rt *Router) rxLoop() {
 			log.Printf("router: RX header from reflector: MYCALL=%q URCALL=%q RPT1=%q RPT2=%q",
 				hdr.MyCall, hdr.YourCall, hdr.RPT1, hdr.RPT2)
 			if rt.radio.IsOpen() {
-				rt.radio.SendHeader(hdr) //nolint:errcheck
+				if err := rt.radio.SendHeader(hdr); err != nil {
+					rt.emit(Event{Direction: DirRX, Err: err})
+				}
 			}
 			h := hdr
 			rt.emit(Event{Direction: DirRX, Header: &h})
@@ -186,7 +193,9 @@ func (rt *Router) rxLoop() {
 				return
 			}
 			if rt.radio.IsOpen() {
-				rt.radio.SendFrame(frm) //nolint:errcheck
+				if err := rt.radio.SendFrame(frm); err != nil {
+					rt.emit(Event{Direction: DirRX, Err: err})
+				}
 			}
 			f := frm
 			rt.emit(Event{Direction: DirRX, Frame: &f})

@@ -28,6 +28,7 @@ type MMDVMRadio struct {
 	hdrCh  chan dstar.DVHeader
 	frmCh  chan dstar.DVFrame
 	stopCh chan struct{}
+	wg     sync.WaitGroup // tracks readLoop + statusLoop
 }
 
 // NewMMDVMRadio returns a new, unopened MMDVMRadio.
@@ -65,26 +66,11 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	// MMDVM protocol always uses 115200 baud (confirmed by BlueDV pcap).
 	baud := 115200
 
-	stopBits := serial.OneStopBit
-	if cfg.StopBits == 2 {
-		stopBits = serial.TwoStopBits
-	}
-	parity := serial.NoParity
-	switch cfg.Parity {
-	case "E", "e":
-		parity = serial.EvenParity
-	case "O", "o":
-		parity = serial.OddParity
-	}
-	dataBits := cfg.DataBits
-	if dataBits == 0 {
-		dataBits = 8
-	}
 	mode := &serial.Mode{
 		BaudRate: baud,
-		DataBits: dataBits,
-		StopBits: stopBits,
-		Parity:   parity,
+		DataBits: 8,
+		StopBits: serial.OneStopBit,
+		Parity:   serial.NoParity,
 	}
 	p, err := serial.Open(cfg.Port, mode)
 	if err != nil {
@@ -121,6 +107,7 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 		log.Printf("mmdvm: handshake failed: %v — continuing with status polling", err)
 	}
 
+	m.wg.Add(2)
 	go m.readLoop()
 	go m.statusLoop()
 
@@ -275,13 +262,16 @@ func (m *MMDVMRadio) waitForACK(r io.Reader, cmdName string) error {
 
 func (m *MMDVMRadio) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if !m.open {
+		m.mu.Unlock()
 		return nil
 	}
 	close(m.stopCh)
 	err := m.port.Close()
 	m.open = false
+	m.mu.Unlock()
+	// Wait for goroutines to exit after releasing the lock (they need it).
+	m.wg.Wait()
 	return err
 }
 
@@ -329,6 +319,7 @@ func (m *MMDVMRadio) PTT(bool) error {
 // readLoop runs in a background goroutine, reading MMDVM frames and
 // dispatching D-STAR headers/voice to the RX channels.
 func (m *MMDVMRadio) readLoop() {
+	defer m.wg.Done()
 	log.Printf("mmdvm: readLoop started")
 	r := m.reader()
 	firstStatus := false
@@ -424,6 +415,7 @@ func (m *MMDVMRadio) readLoop() {
 
 // statusLoop sends GET_STATUS every 250ms as a keepalive.
 func (m *MMDVMRadio) statusLoop() {
+	defer m.wg.Done()
 	log.Printf("mmdvm: statusLoop started")
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()

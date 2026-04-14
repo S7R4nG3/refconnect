@@ -23,6 +23,7 @@ type SerialRadio struct {
 	hdrCh  chan dstar.DVHeader
 	frmCh  chan dstar.DVFrame
 	stopCh chan struct{}
+	wg     sync.WaitGroup // tracks readLoop + pollLoop
 }
 
 // NewSerialRadio returns a new, unopened SerialRadio.
@@ -40,31 +41,14 @@ func (r *SerialRadio) Open(cfg Config) error {
 		return fmt.Errorf("radio: already open")
 	}
 
-	stopBits := serial.OneStopBit
-	if cfg.StopBits == 2 {
-		stopBits = serial.TwoStopBits
-	}
-	parity := serial.NoParity
-	switch cfg.Parity {
-	case "E", "e":
-		parity = serial.EvenParity
-	case "O", "o":
-		parity = serial.OddParity
-	}
-	baud := cfg.BaudRate
-	if baud == 0 {
-		baud = 115200
-	}
-	dataBits := cfg.DataBits
-	if dataBits == 0 {
-		dataBits = 8
-	}
+	// DV Gateway Terminal protocol always uses 38400 baud (confirmed by RS-MS3W pcap).
+	baud := 38400
 
 	mode := &serial.Mode{
 		BaudRate: baud,
-		DataBits: dataBits,
-		StopBits: stopBits,
-		Parity:   parity,
+		DataBits: 8,
+		StopBits: serial.OneStopBit,
+		Parity:   serial.NoParity,
 	}
 	p, err := serial.Open(cfg.Port, mode)
 	if err != nil {
@@ -88,6 +72,7 @@ func (r *SerialRadio) Open(cfg Config) error {
 	// Brief pause to let the radio process the flush before polling begins.
 	time.Sleep(100 * time.Millisecond)
 
+	r.wg.Add(2)
 	go r.readLoop()
 	go r.pollLoop()
 	return nil
@@ -95,13 +80,16 @@ func (r *SerialRadio) Open(cfg Config) error {
 
 func (r *SerialRadio) Close() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if !r.open {
+		r.mu.Unlock()
 		return nil
 	}
 	close(r.stopCh)
 	err := r.port.Close()
 	r.open = false
+	r.mu.Unlock()
+	// Wait for goroutines to exit after releasing the lock (they need it).
+	r.wg.Wait()
 	return err
 }
 
@@ -136,20 +124,13 @@ func (r *SerialRadio) RxHeaders() <-chan dstar.DVHeader { return r.hdrCh }
 func (r *SerialRadio) RxFrames() <-chan dstar.DVFrame   { return r.frmCh }
 
 func (r *SerialRadio) PTT(on bool) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.open {
-		return fmt.Errorf("radio: port not open")
-	}
-	if !r.cfg.PTTViaRTS {
-		return nil
-	}
-	return r.port.SetRTS(on)
+	return nil
 }
 
 // readLoop runs in a background goroutine, parsing DV Gateway Terminal frames
 // and dispatching headers and voice frames to their respective channels.
 func (r *SerialRadio) readLoop() {
+	defer r.wg.Done()
 	log.Printf("radio: readLoop started")
 	pollAckLogged := false
 
@@ -209,6 +190,7 @@ func (r *SerialRadio) readLoop() {
 // pollLoop sends a poll keepalive to the radio every second.
 // The radio requires regular polls or it stops sending DV data.
 func (r *SerialRadio) pollLoop() {
+	defer r.wg.Done()
 	log.Printf("radio: pollLoop started")
 	pollCount := 0
 	ticker := time.NewTicker(1 * time.Second)

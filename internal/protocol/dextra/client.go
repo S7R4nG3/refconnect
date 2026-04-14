@@ -14,6 +14,10 @@ import (
 	"github.com/S7R4nG3/refconnect/internal/protocol"
 )
 
+// dextraLogRXPackets controls verbose hex-dump logging of non-keepalive inbound
+// packets. Disable for production to reduce log noise.
+const dextraLogRXPackets = false
+
 const (
 	keepaliveInterval = 5 * time.Second
 	connectTimeout    = 10 * time.Second
@@ -33,6 +37,7 @@ type Client struct {
 	eventCh chan protocol.Event
 
 	stopCh         chan struct{}
+	wg             sync.WaitGroup // tracks rxLoop + keepaliveLoop
 	streamID       uint16
 	rxStreamID     uint16 // current inbound stream ID for dedup
 	rxStreamActive bool
@@ -120,6 +125,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 
 	c.setState(protocol.StateConnected, fmt.Sprintf("Linked to %s module %c", cfg.Host, cfg.Module))
+	c.wg.Add(2)
 	go c.rxLoop()
 	go c.keepaliveLoop()
 	return nil
@@ -138,6 +144,8 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
+	// Wait for goroutines to exit before closing channels to avoid send-on-closed panic.
+	c.wg.Wait()
 	close(c.hdrCh)
 	close(c.frmCh)
 	close(c.eventCh)
@@ -188,6 +196,7 @@ func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 
 // rxLoop reads inbound UDP packets and dispatches them to hdrCh/frmCh.
 func (c *Client) rxLoop() {
+	defer c.wg.Done()
 	buf := make([]byte, udpReadBuf)
 	for {
 		c.mu.Lock()
@@ -207,18 +216,15 @@ func (c *Client) rxLoop() {
 			return
 		}
 
-		// Log keepalives (9 bytes: callsign + 0x00) at reduced frequency; log
-		// everything else at full verbosity so protocol issues are visible.
+		// Keepalive: 9 bytes ending in 0x00 — skip silently.
 		if n == 9 && buf[8] == 0x00 {
-			// keepalive — no-op, server is just maintaining the link
 			continue
 		}
-		show := n
-		if show > 64 {
-			show = 64
+		if dextraLogRXPackets {
+			show := min(n, 64)
+			log.Printf("dextra: RX %d bytes from %s (byte[0]=0x%02X):\n%s",
+				n, fromAddr, buf[0], hex.Dump(buf[:show]))
 		}
-		log.Printf("dextra: RX %d bytes from %s (byte[0]=0x%02X):\n%s",
-			n, fromAddr, buf[0], hex.Dump(buf[:show]))
 
 		hdr, frm, err := parsePacket(buf[:n])
 		if err != nil {
@@ -268,6 +274,7 @@ func (c *Client) rxLoop() {
 
 // keepaliveLoop sends a poll every keepaliveInterval to maintain the link.
 func (c *Client) keepaliveLoop() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 	for {

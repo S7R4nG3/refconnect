@@ -1,6 +1,7 @@
 package xlx
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -18,8 +19,8 @@ const (
 	udpReadBuf        = 4096
 )
 
-// Client implements protocol.Reflector for XLX reflectors using the native
-// XLX control protocol on port 30001 with xlxd-compatible DSVT voice framing.
+// Client implements protocol.Reflector for XLX reflectors using xlxd-compatible
+// DSVT voice framing.
 type Client struct {
 	mu       sync.Mutex
 	conn     *net.UDPConn
@@ -30,8 +31,11 @@ type Client struct {
 	frmCh   chan dstar.DVFrame
 	eventCh chan protocol.Event
 
-	stopCh   chan struct{}
-	streamID uint16
+	stopCh         chan struct{}
+	wg             sync.WaitGroup // tracks rxLoop + keepaliveLoop
+	streamID       uint16
+	rxStreamID     uint16 // current inbound stream ID for dedup
+	rxStreamActive bool
 }
 
 // New returns a new XLX client.
@@ -109,6 +113,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 
 	c.setState(protocol.StateConnected, fmt.Sprintf("Linked to XLX %s module %c", cfg.Host, cfg.Module))
+	c.wg.Add(2)
 	go c.rxLoop()
 	go c.keepaliveLoop()
 	return nil
@@ -125,6 +130,8 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
+	// Wait for goroutines to exit before closing channels to avoid send-on-closed panic.
+	c.wg.Wait()
 	close(c.hdrCh)
 	close(c.frmCh)
 	close(c.eventCh)
@@ -173,6 +180,7 @@ func (c *Client) RxFrames() <-chan dstar.DVFrame   { return c.frmCh }
 func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 
 func (c *Client) rxLoop() {
+	defer c.wg.Done()
 	buf := make([]byte, udpReadBuf)
 	for {
 		c.mu.Lock()
@@ -197,6 +205,24 @@ func (c *Client) rxLoop() {
 			continue
 		}
 		if hdr != nil {
+			// XLX servers re-transmit headers throughout a transmission.
+			// Only forward the FIRST header per stream to avoid resetting
+			// the radio's voice decoder.
+			var sid uint16
+			if n >= 14 {
+				sid = binary.LittleEndian.Uint16(buf[12:14])
+			}
+			c.mu.Lock()
+			dup := c.rxStreamActive && sid == c.rxStreamID
+			if !dup {
+				c.rxStreamID = sid
+				c.rxStreamActive = true
+				log.Printf("xlx: new RX stream %04X — forwarding header", sid)
+			}
+			c.mu.Unlock()
+			if dup {
+				continue
+			}
 			select {
 			case c.hdrCh <- *hdr:
 			default:
@@ -204,6 +230,11 @@ func (c *Client) rxLoop() {
 			}
 		}
 		if frm != nil {
+			if frm.End {
+				c.mu.Lock()
+				c.rxStreamActive = false
+				c.mu.Unlock()
+			}
 			select {
 			case c.frmCh <- *frm:
 			default:
@@ -213,6 +244,7 @@ func (c *Client) rxLoop() {
 }
 
 func (c *Client) keepaliveLoop() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 	for {

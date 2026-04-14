@@ -13,6 +13,10 @@ import (
 	"github.com/S7R4nG3/refconnect/internal/protocol"
 )
 
+// dplusLogRXPackets controls verbose hex-dump logging of non-keepalive inbound
+// packets. Disable for production to reduce log noise.
+const dplusLogRXPackets = false
+
 const (
 	keepaliveInterval = 5 * time.Second
 	connectTimeout    = 10 * time.Second
@@ -32,6 +36,7 @@ type Client struct {
 	eventCh chan protocol.Event
 
 	stopCh           chan struct{}
+	wg               sync.WaitGroup // tracks rxLoop + keepaliveLoop
 	streamID         [2]byte
 	rxKeepaliveCount int
 	rxStreamID       [2]byte // current inbound stream ID for dedup
@@ -161,6 +166,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 
 	log.Printf("dplus: connected from local %s to %s", conn.LocalAddr(), addr)
 	c.setState(protocol.StateConnected, fmt.Sprintf("Linked to %s module %c", cfg.Host, cfg.Module))
+	c.wg.Add(2)
 	go c.rxLoop()
 	go c.keepaliveLoop()
 	return nil
@@ -179,6 +185,8 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
+	// Wait for goroutines to exit before closing channels to avoid send-on-closed panic.
+	c.wg.Wait()
 	close(c.hdrCh)
 	close(c.frmCh)
 	close(c.eventCh)
@@ -238,6 +246,7 @@ func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 
 // rxLoop reads inbound DPlus UDP packets.
 func (c *Client) rxLoop() {
+	defer c.wg.Done()
 	buf := make([]byte, udpReadBuf)
 	for {
 		c.mu.Lock()
@@ -270,13 +279,11 @@ func (c *Client) rxLoop() {
 			}
 			continue
 		}
-		// Log ALL non-keepalive inbound packets for debugging.
-		show := n
-		if show > 64 {
-			show = 64
+		if dplusLogRXPackets {
+			show := min(n, 64)
+			log.Printf("dplus: RX packet (%d bytes, byte[0]=0x%02X byte[1]=0x%02X):\n%s",
+				n, buf[0], buf[1], hex.Dump(buf[:show]))
 		}
-		log.Printf("dplus: RX packet (%d bytes, byte[0]=0x%02X byte[1]=0x%02X):\n%s",
-			n, buf[0], buf[1], hex.Dump(buf[:show]))
 
 		// Parse DSVT data packets (byte[1] = 0x80).
 		hdr, frm, err := parsePacket(buf[:n])
@@ -325,6 +332,7 @@ func (c *Client) rxLoop() {
 }
 
 func (c *Client) keepaliveLoop() {
+	defer c.wg.Done()
 	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 	for {
