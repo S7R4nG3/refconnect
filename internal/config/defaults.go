@@ -13,6 +13,7 @@ func Default() *Config {
 			StopBits:  1,
 			Parity:    "N",
 			PTTViaRTS: false,
+			Protocol:  "DV-GW",
 		},
 		Reflectors: []ReflectorEntry{
 			{

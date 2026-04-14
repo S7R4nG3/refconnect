@@ -3,14 +3,24 @@
 //
 // Connect packet (client → server, 11 bytes, per G4KLX ircddbGateway ConnectData):
 //
-//	[0-7]  repeater callsign, space-padded to 8 bytes (byte[7] = local module, 'G' for gateway)
-//	[8]    local module letter (copy of byte[7])
+//	[0-6]  callsign base, space-padded to 7 bytes
+//	[7]    local module letter (8th character of MyCall — e.g. ' ', 'A'–'Z')
+//	[8]    local module letter (copy of [7])
 //	[9]    target reflector module letter — must NOT be ' '
 //	[10]   0x00
 //
 // ACK (server → client, 14 bytes): first 10 bytes echo + "ACK\0"
 // Disconnect: same 11-byte layout but byte[9] = ' ' (0x20)
 // Keepalive: callsign space-padded to 8 bytes + 0x00 = 9 bytes (both directions)
+//
+// DSVT data framing:
+// Modern XRF reflectors (openquad.net, etc.) run xlxd, which expects the same
+// DSVT layout as the XLX native protocol: a 12-byte fixed tag (DSVT magic +
+// type + 3 zeros + 4 config/band bytes), then a 2-byte LE stream ID, then the
+// sequence byte and payload.
+//
+//	Header: 56 bytes = 12-byte tag + 2 stream ID + 1 seq(0x80) + 41 D-STAR header
+//	Voice:  27 bytes = 12-byte tag + 2 stream ID + 1 seq       + 9 AMBE + 3 SlowData
 package dextra
 
 import (
@@ -24,29 +34,41 @@ import (
 // UDP port used by DExtra reflectors.
 const DefaultPort = 30001
 
-// DSVT magic bytes that begin every DExtra DSVT voice/header packet.
-var dsvtMagic = [4]byte{'D', 'S', 'V', 'T'}
+// DSVT 12-byte fixed tag prefixes for header and voice frames.
+// These match the xlxd DSVT framing used by modern XRF reflectors.
+var dsvtHeaderTag = [12]byte{'D', 'S', 'V', 'T', 0x10, 0x00, 0x00, 0x00, 0x20, 0x00, 0x01, 0x01}
+var dsvtVoiceTag = [12]byte{'D', 'S', 'V', 'T', 0x20, 0x00, 0x00, 0x00, 0x20, 0x00, 0x01, 0x01}
 
-// DSVT frame type bytes.
+// DSVT frame type byte (at tag offset 4).
 const (
 	typeHeader = 0x10
 	typeVoice  = 0x20
 )
 
+// Packet sizes.
+const (
+	headerPacketLen = 56 // 12 tag + 2 streamID + 1 seq + 41 header
+	voicePacketLen  = 27 // 12 tag + 2 streamID + 1 seq + 9 AMBE + 3 SlowData
+)
+
 // buildConnectPacket builds the 11-byte DExtra link request packet.
 // Wire layout (per G4KLX ircddbGateway ConnectData::getDExtraData):
 //
-//	[0-6]  callsign, space-padded to 7 bytes
-//	[7]    local module letter ('G' for gateway/software client)
+//	[0-6]  callsign base, space-padded to 7 bytes
+//	[7]    local module letter (8th character of MyCall — e.g. ' ', 'A'–'Z')
 //	[8]    local module letter (copy of [7])
 //	[9]    target reflector module letter
 //	[10]   0x00
+//
+// callsign is the full 8-char MyCall (e.g. "KR4GCQ  " or "KR4GCQ D"); the
+// 8th character carries the local module/suffix chosen in the UI.
 func buildConnectPacket(callsign string, module byte) []byte {
 	pkt := make([]byte, 11)
-	cs := dstar.PadCallsign(callsign, 7)
+	cs := dstar.PadCallsign(callsign, 8) // ensure 8 chars
 	copy(pkt[0:7], cs)
-	pkt[7] = 'G' // local module: gateway indicator
-	pkt[8] = 'G' // copy of local module
+	localMod := cs[7] // suffix: space or 'A'–'Z'
+	pkt[7] = localMod
+	pkt[8] = localMod // copy of local module
 	pkt[9] = module
 	pkt[10] = 0x00
 	return pkt
@@ -69,40 +91,34 @@ func buildKeepalive(callsign string) []byte {
 	return pkt
 }
 
-// encodeHeader builds a 54-byte DSVT header packet ready to send over UDP.
-func encodeHeader(streamID [4]byte, hdr dstar.DVHeader) ([]byte, error) {
+// encodeHeader builds a 56-byte DSVT header packet ready to send over UDP.
+// Layout: 12-byte tag + streamID(2, LE) + 0x80 + dstar_header(41) = 56 bytes.
+func encodeHeader(streamID uint16, hdr dstar.DVHeader) ([]byte, error) {
 	raw, err := dstar.EncodeHeader(hdr)
 	if err != nil {
 		return nil, err
 	}
-	pkt := make([]byte, 54)
-	copy(pkt[0:4], dsvtMagic[:])
-	pkt[4] = typeHeader
-	pkt[5] = 0x00
-	pkt[6] = 0x00
-	pkt[7] = 0x00
-	copy(pkt[8:12], streamID[:])
-	pkt[12] = 0x80 // header sequence marker
-	copy(pkt[13:54], raw[:])
+	pkt := make([]byte, headerPacketLen)
+	copy(pkt[0:12], dsvtHeaderTag[:])
+	binary.LittleEndian.PutUint16(pkt[12:14], streamID)
+	pkt[14] = 0x80 // header sequence marker
+	copy(pkt[15:56], raw[:])
 	return pkt, nil
 }
 
 // encodeVoice builds a 27-byte DSVT voice packet.
-func encodeVoice(streamID [4]byte, f dstar.DVFrame) []byte {
-	pkt := make([]byte, 27)
-	copy(pkt[0:4], dsvtMagic[:])
-	pkt[4] = typeVoice
-	pkt[5] = 0x00
-	pkt[6] = 0x00
-	pkt[7] = 0x00
-	copy(pkt[8:12], streamID[:])
+// Layout: 12-byte tag + streamID(2, LE) + seq(1) + AMBE(9) + SlowData(3) = 27 bytes.
+func encodeVoice(streamID uint16, f dstar.DVFrame) []byte {
+	pkt := make([]byte, voicePacketLen)
+	copy(pkt[0:12], dsvtVoiceTag[:])
+	binary.LittleEndian.PutUint16(pkt[12:14], streamID)
 	seq := f.Seq
 	if f.End {
 		seq |= 0x40
 	}
-	pkt[12] = seq
-	copy(pkt[13:22], f.AMBE[:])
-	copy(pkt[22:25], f.SlowData[:])
+	pkt[14] = seq
+	copy(pkt[15:24], f.AMBE[:])
+	copy(pkt[24:27], f.SlowData[:])
 	return pkt
 }
 
@@ -110,7 +126,7 @@ func encodeVoice(streamID [4]byte, f dstar.DVFrame) []byte {
 // Returns (header, nil, nil), (nil, frame, nil), or (nil, nil, err).
 // Non-DSVT packets (keepalives, control) are silently ignored.
 func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
-	if len(data) < 13 {
+	if len(data) < 15 {
 		return nil, nil, nil // too short — keepalive or control packet
 	}
 	if data[0] != 'D' || data[1] != 'S' || data[2] != 'V' || data[3] != 'T' {
@@ -119,11 +135,11 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 
 	switch data[4] {
 	case typeHeader:
-		if len(data) < 54 {
+		if len(data) < headerPacketLen {
 			return nil, nil, fmt.Errorf("dextra: short header packet (%d bytes)", len(data))
 		}
 		var raw [dstar.HeaderBytes]byte
-		copy(raw[:], data[13:54])
+		copy(raw[:], data[15:56])
 		h, err := dstar.DecodeHeader(raw)
 		if err != nil {
 			return nil, nil, err
@@ -131,17 +147,17 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 		return &h, nil, nil
 
 	case typeVoice:
-		if len(data) < 27 {
+		if len(data) < voicePacketLen {
 			return nil, nil, fmt.Errorf("dextra: short voice packet (%d bytes)", len(data))
 		}
-		seq := data[12]
+		seq := data[14]
 		end := seq&0x40 != 0
 		seq &^= 0x40
 		var f dstar.DVFrame
 		f.Seq = seq
 		f.End = end
-		copy(f.AMBE[:], data[13:22])
-		copy(f.SlowData[:], data[22:25])
+		copy(f.AMBE[:], data[15:24])
+		copy(f.SlowData[:], data[24:27])
 		return nil, &f, nil
 	}
 	return nil, nil, nil
@@ -149,8 +165,6 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 
 var streamCounter atomic.Uint32
 
-func nextStreamID() [4]byte {
-	var id [4]byte
-	binary.LittleEndian.PutUint32(id[:], streamCounter.Add(1))
-	return id
+func nextStreamID() uint16 {
+	return uint16(streamCounter.Add(1))
 }

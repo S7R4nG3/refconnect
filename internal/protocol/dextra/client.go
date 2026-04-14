@@ -1,6 +1,7 @@
 package dextra
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -31,8 +32,10 @@ type Client struct {
 	frmCh   chan dstar.DVFrame
 	eventCh chan protocol.Event
 
-	stopCh   chan struct{}
-	streamID [4]byte
+	stopCh         chan struct{}
+	streamID       uint16
+	rxStreamID     uint16 // current inbound stream ID for dedup
+	rxStreamActive bool
 }
 
 // New returns a new DExtra client.  Call Connect to establish a link.
@@ -106,10 +109,14 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 	log.Printf("dextra: received %d bytes from %s:\n%s", n, fromAddr, hex.Dump(buf[:n]))
 
-	// Validate ACK: server echoes the connect packet (10 bytes) + "ACK\0" = 14 bytes.
-	// bytes [10-12] must be 'A', 'C', 'K'.
-	if n < 14 || buf[10] != 'A' || buf[11] != 'C' || buf[12] != 'K' {
-		return fail(fmt.Sprintf("connect rejected by reflector (n=%d)", n), fmt.Errorf("dextra: connect rejected"))
+	// Validate ACK: server echoes either 10 or 11 bytes of the connect packet then
+	// appends "ACK\0".  Most XRF servers echo 10 bytes (dropping the trailing 0x00),
+	// giving 14 bytes total with "ACK" at [10].  Some echo all 11 bytes, giving 15
+	// bytes with "ACK" at [11].  Accept either.
+	ackOK := (n >= 14 && buf[10] == 'A' && buf[11] == 'C' && buf[12] == 'K') ||
+		(n >= 15 && buf[11] == 'A' && buf[12] == 'C' && buf[13] == 'K')
+	if !ackOK {
+		return fail(fmt.Sprintf("connect rejected by reflector (n=%d bytes: %X)", n, buf[:n]), fmt.Errorf("dextra: connect rejected"))
 	}
 
 	c.setState(protocol.StateConnected, fmt.Sprintf("Linked to %s module %c", cfg.Host, cfg.Module))
@@ -147,7 +154,7 @@ func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	if conn == nil {
 		return fmt.Errorf("dextra: not connected")
 	}
-	log.Printf("dextra: SendHeader streamID=%02X RPT1=%q RPT2=%q MYCALL=%q URCALL=%q",
+	log.Printf("dextra: SendHeader streamID=%04X RPT1=%q RPT2=%q MYCALL=%q URCALL=%q",
 		sid, hdr.RPT1, hdr.RPT2, hdr.MyCall, hdr.YourCall)
 	pkt, err := encodeHeader(sid, hdr)
 	if err != nil {
@@ -190,7 +197,7 @@ func (c *Client) rxLoop() {
 			return
 		}
 
-		n, _, err := conn.ReadFromUDP(buf)
+		n, fromAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			select {
 			case <-c.stopCh:
@@ -200,11 +207,44 @@ func (c *Client) rxLoop() {
 			return
 		}
 
+		// Log keepalives (9 bytes: callsign + 0x00) at reduced frequency; log
+		// everything else at full verbosity so protocol issues are visible.
+		if n == 9 && buf[8] == 0x00 {
+			// keepalive — no-op, server is just maintaining the link
+			continue
+		}
+		show := n
+		if show > 64 {
+			show = 64
+		}
+		log.Printf("dextra: RX %d bytes from %s (byte[0]=0x%02X):\n%s",
+			n, fromAddr, buf[0], hex.Dump(buf[:show]))
+
 		hdr, frm, err := parsePacket(buf[:n])
 		if err != nil {
+			log.Printf("dextra: parse error: %v", err)
 			continue
 		}
 		if hdr != nil {
+			// DExtra servers re-transmit the header packet periodically
+			// throughout a transmission.  Only forward the FIRST header for
+			// each new stream to avoid resetting the radio's voice decoder.
+			var sid uint16
+			if n >= 14 {
+				sid = binary.LittleEndian.Uint16(buf[12:14])
+			}
+			c.mu.Lock()
+			dup := c.rxStreamActive && sid == c.rxStreamID
+			if !dup {
+				c.rxStreamID = sid
+				c.rxStreamActive = true
+				log.Printf("dextra: new RX stream %04X — forwarding header", sid)
+			}
+			c.mu.Unlock()
+			if dup {
+				log.Printf("dextra: suppressing duplicate header for stream %04X", sid)
+				continue
+			}
 			select {
 			case c.hdrCh <- *hdr:
 			default:
@@ -212,6 +252,12 @@ func (c *Client) rxLoop() {
 			}
 		}
 		if frm != nil {
+			if frm.End {
+				c.mu.Lock()
+				c.rxStreamActive = false
+				c.mu.Unlock()
+				log.Printf("dextra: RX stream end")
+			}
 			select {
 			case c.frmCh <- *frm:
 			default:

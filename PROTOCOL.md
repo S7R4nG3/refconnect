@@ -338,7 +338,316 @@ XLX reflectors are multi-protocol. The XLX client in `internal/protocol/xlx/` im
 
 ---
 
-## 8. Pcap Evidence Summary
+## 8. MMDVM Protocol (Kenwood TH-D75)
+
+The TH-D75 implements an MMDVM-compatible modem interface, communicating over Bluetooth SPP (Serial Port Profile) or USB serial. Unlike the IC-705's proprietary DV Gateway Terminal protocol, the TH-D75 speaks the standard MMDVM serial protocol as defined by the g4klx/MMDVM firmware project. The canonical host-side reference implementation is g4klx/MMDVMHost; DroidStar (doug-h/DroidStar) is another client known to work with the TH-D75.
+
+### 8.1 Hardware Connection
+
+```
+TH-D75 ──► Bluetooth SPP ──► Host (virtual serial port)
+  or
+TH-D75 ──► USB cable ──► Host USB (CDC-ACM virtual serial port)
+```
+
+**USB device:** VID `0x2166` PID `0x9023`. Presents as a composite USB device with 4 interfaces:
+- Interface 0 (CDC Control) + Interface 1 (CDC Data) — virtual serial port (endpoints 0x01 OUT, 0x81 IN)
+- Interface 2 (Audio Control) + Interface 3 (Audio Streaming) — USB audio (endpoint 0x83 IN, 48kHz 16-bit mono PCM)
+
+Only **one** CDC serial port (unlike the IC-705 which has two).
+
+**Serial parameters:** **115200 baud**, 8 data bits, no parity, 1 stop bit (8N1). Confirmed by BlueDV pcap CDC SET_LINE_CODING (`00 C2 01 00 00 00 08` = 115200, 1 stop, no parity, 8 bits).
+
+**Radio settings (TH-D75):**
+- Menu 650: **Reflector TERM Mode** — must be enabled
+- Menu 985: **Bluetooth** — must be set if connecting via BT SPP
+
+**Port initialization:**
+- Set **DTR high** — required for TH-D75 (confirmed by BlueDV docs)
+- Set **RTS high** — DroidStar does this
+- Wait **2 seconds** after opening the port before sending any commands (per MMDVMHost)
+- Drain any bytes the modem sent during the init delay
+
+No special init-flush sequence (unlike the IC-705's `FF FF FF`). Just open, wait, then start the handshake.
+
+### 8.2 Frame Structure
+
+Every MMDVM frame follows this envelope:
+
+```
+[0xE0][LENGTH][COMMAND][PAYLOAD...]
+```
+
+| Field   | Size     | Description |
+|---------|----------|-------------|
+| 0xE0    | 1 byte   | Frame start marker (always `0xE0`) |
+| LENGTH  | 1 byte   | Total frame length including start, length, command, and payload bytes |
+| COMMAND | 1 byte   | Command/type identifier |
+| PAYLOAD | variable | Command-specific data (may be empty) |
+
+**No terminator byte.** The length field tells you when the frame ends. This differs from the IC-705 DV Gateway Terminal protocol which uses `0xFF` as a terminator.
+
+Maximum frame size: 255 bytes.
+
+When reading, scan for the `0xE0` start byte, discarding any garbage/noise bytes until found.
+
+### 8.3 Command Types
+
+| Constant | Value | Direction | Description |
+|----------|-------|-----------|-------------|
+| GET_VERSION | 0x00 | host → modem | Request firmware version and protocol info |
+| GET_STATUS | 0x01 | host → modem | Request modem status (keepalive) |
+| SET_CONFIG | 0x02 | host → modem | Configure modem modes and levels |
+| SET_MODE | 0x03 | host → modem | Set operating mode (0x00=idle, 0x01=D-STAR) |
+| SET_FREQ | 0x04 | host → modem | Set RX/TX frequency (modem ACKs but ignores values) |
+| DSTAR_HEADER | 0x10 | bidirectional | D-STAR header (41 bytes) |
+| DSTAR_DATA | 0x11 | bidirectional | D-STAR voice frame (12 bytes: 9 AMBE + 3 slow data) |
+| DSTAR_LOST | 0x12 | modem → host | D-STAR signal lost |
+| DSTAR_EOT | 0x13 | bidirectional | D-STAR end of transmission |
+| ACK | 0x70 | modem → host | Command accepted |
+| NAK | 0x7F | modem → host | Command rejected (payload[1] = reason code) |
+
+### 8.4 Handshake Sequence
+
+The handshake must complete before the modem will accept D-STAR data. The following sequence was captured from a BlueDV ↔ TH-D75 USB pcap (2026-04-14):
+
+```
+1. Open port, set DTR/RTS high
+2. Sleep 2 seconds (modem init time)
+3. Drain any buffered bytes
+4. GET_VERSION     →  wait for version response
+5. SET_MODE(idle)  →  wait for ACK
+6. SET_FREQ        →  wait for ACK
+7. SET_CONFIG      →  wait for ACK
+8. SET_MODE(D-STAR)→  wait for ACK     ← activates D-STAR mode
+9. Start GET_STATUS polling every 250ms
+```
+
+> **Important:** SET_MODE(D-STAR) after SET_CONFIG is required. Without it, the TH-D75 will not process D-STAR data frames. BlueDV also sends SET_MODE(idle) after EOT to deactivate D-STAR mode.
+
+#### GET_VERSION (3 bytes)
+
+```
+Host → Modem:  E0 03 00
+```
+
+**Response (variable length):**
+
+Protocol v1 (TH-D75 reports this):
+```
+Modem → Host:  E0 <len> 00 <version=1> <description...>
+```
+
+Protocol v2:
+```
+Modem → Host:  E0 <len> 00 <version=2> <capabilities1> <capabilities2> <cpuType> <UDID(16)> <description...>
+```
+
+The version byte at payload[0] determines which SET_CONFIG layout to use. The TH-D75 reports **protocol version 1** with description `TH-D75 RTM1.00` (full response: `E0 12 00 01 54 48 2D 44 37 35 20 52 54 4D 31 2E 30 30`).
+
+**Retry logic:** MMDVMHost retries GET_VERSION up to **6 times** with **1.5-second gaps** between attempts. Each attempt polls for up to 30 response frames. If no version response after all retries, the handshake fails.
+
+#### SET_MODE (4 bytes)
+
+```
+Host → Modem:  E0 04 03 <mode>
+```
+
+| Mode | Meaning |
+|------|---------|
+| 0x00 | Idle — no mode active |
+| 0x01 | D-STAR active |
+
+BlueDV sends SET_MODE(idle) before SET_FREQ during init, SET_MODE(D-STAR) after SET_CONFIG to activate, and SET_MODE(idle) after DSTAR_EOT to deactivate.
+
+**Expected response:** `ACK` (0x70) — the ACK payload echoes cmd 0x03: `E0 04 70 03`
+
+#### SET_FREQ (12 bytes)
+
+```
+Host → Modem:  E0 0C 04 <9 payload bytes>
+```
+
+Payload layout (9 bytes):
+```
+[0]     = 0x00                  (padding)
+[1..4]  = RX frequency (Hz), little-endian uint32
+[5..8]  = TX frequency (Hz), little-endian uint32
+```
+
+> **Note (2026-04-14):** BlueDV pcap confirms only 9 payload bytes — no rfLevel or POCSAG frequency fields (unlike MMDVMHost which sends 14). The firmware ACKs SET_FREQ without processing the values. BlueDV sends 434.3 MHz (`60 E4 E2 19` LE = 434300000 Hz).
+
+**Expected response:** `ACK` (0x70)
+
+#### SET_CONFIG — Protocol v1 (21 bytes) — TH-D75
+
+The TH-D75 reports protocol v1. This is the layout confirmed by BlueDV pcap.
+
+```
+Host → Modem:  E0 15 02 <18 payload bytes>
+```
+
+**Exact bytes from pcap:** `E0 15 02 82 01 0A 00 80 80 01 00 80 7E 7E 7E 7E 80 80 80 04 80`
+
+v1 payload layout (18 bytes):
+
+| Index | Field | Value | Notes |
+|-------|-------|-------|-------|
+| 0 | flags | 0x82 | simplex(0x80) + txInvert(0x02) |
+| 1 | modes | 0x01 | D-STAR enabled |
+| 2 | txDelay | 0x0A | 10 × 10ms = 100ms |
+| 3 | modemState | 0x00 | MODE_IDLE |
+| 4 | rxLevel | 0x80 | 128 (~50%) |
+| 5 | cwIdTXLevel | 0x80 | 128 |
+| 6 | dmrColorCode | 0x01 | |
+| 7 | dmrDelay | 0x00 | |
+| 8 | oscOffset | 0x80 | 128 (0 ppm) |
+| 9 | dstarTXLevel | 0x7E | 126 |
+| 10 | dmrTXLevel | 0x7E | 126 |
+| 11 | ysfTXLevel | 0x7E | 126 |
+| 12 | p25TXLevel | 0x7E | 126 |
+| 13 | txDCOffset | 0x80 | 128 (0 offset) |
+| 14 | rxDCOffset | 0x80 | 128 (0 offset) |
+| 15 | nxdnTXLevel | 0x80 | 128 |
+| 16 | ysfTXHang | 0x04 | |
+| 17 | p25TXHang | 0x80 | |
+
+> **Note:** The flags byte **must include txInvert (0x02)**. BlueDV sends 0x82 (simplex + txInvert). Without txInvert, the modem may not communicate correctly.
+
+> **Note:** BlueDV sends only 18 payload bytes (21 total) vs MMDVMHost's 23 payload bytes (26 total). The firmware accepts the shorter payload.
+
+**Expected response:** `ACK` (0x70) if accepted, `NAK` (0x7F) with reason byte if rejected.
+
+#### SET_CONFIG — Protocol v2 (40 bytes)
+
+For modems reporting protocol v2. Layout matches MMDVMHost `setConfig2`.
+
+```
+Host → Modem:  E0 28 02 <37 payload bytes>
+```
+
+v2 payload layout (37 bytes):
+
+| Index | Field | Value | Notes |
+|-------|-------|-------|-------|
+| 0 | flags | 0x82 | simplex(0x80) + txInvert(0x02) |
+| 1 | modes1 | 0x01 | D-STAR enabled |
+| 2 | modes2 | 0x00 | POCSAG enable (not used) |
+| 3 | txDelay | 0x0A | TX delay in 10ms units |
+| 4 | modemState | 0x00 | MODE_IDLE |
+| 5 | txDCOffset | 128 | DC offset + 128 (0 = centered) |
+| 6 | rxDCOffset | 128 | DC offset + 128 (0 = centered) |
+| 7 | rxLevel | 128 | RX level (~50%) |
+| 8 | cwIdTXLevel | 128 | CW ID TX level |
+| 9 | dstarTXLevel | 128 | D-STAR TX level |
+| 10–13 | other TX levels | 0 | DMR, YSF, P25, NXDN (unused) |
+| 14–36 | reserved | 0 | pocsagTXLevel, hang times, etc. |
+
+### 8.5 ACK / NAK Frames
+
+**ACK:**
+```
+Modem → Host:  E0 04 70 <cmd>
+```
+`cmd` echoes the command byte that was accepted.
+
+**NAK:**
+```
+Modem → Host:  E0 05 7F <cmd> <reason>
+```
+
+| Reason | Meaning |
+|--------|---------|
+| 1 | Invalid command |
+| 2 | Wrong mode for this command |
+| 3 | Command too short |
+| 4 | Invalid configuration data |
+| 5 | Invalid D-STAR data length |
+
+### 8.6 GET_STATUS (Keepalive Polling)
+
+```
+Host → Modem:  E0 03 01
+```
+
+Sent every **250ms** (matching MMDVMHost). This serves as a keepalive and also provides modem state.
+
+**Response:**
+```
+Modem → Host:  E0 <len> 01 <enabledModes> <modemState> <byte3> <dstarSpace> ...
+```
+
+| Field | Offset | Description |
+|-------|--------|-------------|
+| enabledModes | payload[0] | Bitmask of enabled modes (bit 0 = D-STAR) |
+| modemState | payload[1] | Current operating state (0 = idle) |
+| dstarSpace | payload[3] | Number of D-STAR frames the modem can buffer |
+
+### 8.7 D-STAR Data Frames
+
+#### DSTAR_HEADER (0x10) — 44 bytes total
+
+```
+Host → Modem:  E0 2C 10 [41-byte D-STAR header with CRC]
+Modem → Host:  E0 2C 10 [41-byte D-STAR header with CRC]
+```
+
+The payload is a standard 41-byte D-STAR header (see §3.1): flags(3) + callsigns(32) + CRC(2) + padding. Both directions use the same format. CRC is included (unlike the IC-705 TX header which omits CRC).
+
+#### DSTAR_DATA (0x11) — 15 bytes total
+
+```
+Host → Modem:  E0 0F 11 [AMBE(9)][SlowData(3)]
+Modem → Host:  E0 0F 11 [AMBE(9)][SlowData(3)]
+```
+
+12 bytes of payload: 9 bytes AMBE+2 voice + 3 bytes slow data. No sequence numbers in the MMDVM frame itself (unlike the IC-705 protocol which carries seq1/seq2 bytes). The host is responsible for tracking sequence.
+
+#### DSTAR_EOT (0x13) — 15 bytes total
+
+```
+Host → Modem:  E0 0F 13 [end pattern(12)]
+Modem → Host:  E0 0F 13 [end pattern(12)]
+```
+
+End-of-transmission pattern (12 bytes):
+```
+55 55 55 55 55 55 55 55 55 55 C8 7A
+```
+
+#### DSTAR_LOST (0x12) — 3 bytes total
+
+```
+Modem → Host:  E0 03 12
+```
+
+Modem-to-host only. Indicates the D-STAR signal was lost (RF timeout). The host should treat this the same as EOT.
+
+### 8.8 Key Differences: MMDVM vs DV Gateway Terminal
+
+| Aspect | IC-705 (DV Gateway Terminal) | TH-D75 (MMDVM) |
+|--------|------------------------------|-----------------|
+| Start marker | None (length byte is first) | `0xE0` |
+| Terminator | `0xFF` always last byte | None (length-delimited) |
+| Length field | `total_bytes - 1` | `total_bytes` (inclusive) |
+| Baud rate | 38400 | 115200 |
+| Init sequence | `FF FF FF` flush required | 2s sleep, then GET_VERSION handshake |
+| Keepalive | Poll (`02 02 FF`) every ~1s | GET_STATUS every 250ms |
+| TX header CRC | Radio generates CRC (don't send it) | CRC included in frame |
+| Voice frame seq | seq1 + seq2 bytes in frame | No sequence in frame (host tracks) |
+| Handshake | None (just start polling) | GET_VERSION → SET_MODE → SET_FREQ → SET_CONFIG → SET_MODE(D-STAR) |
+| PTT control | Via data flow or RTS | Via data flow (header starts TX, EOT ends it) |
+
+### 8.9 Reference Implementations
+
+- **g4klx/MMDVMHost** (`Modem.cpp`) — canonical host-side implementation. The `open()` method defines the handshake order. `setConfig1()`/`setConfig2()` define SET_CONFIG layouts for v1/v2.
+- **g4klx/MMDVM** (`SerialPort.cpp`) — canonical firmware. The `setConfig()` function parses SET_CONFIG payloads and validates lengths.
+- **doug-h/DroidStar** — known working client for TH-D75 over Bluetooth SPP.
+- **BlueDV** (Windows) — confirmed working with TH-D75 over USB-C; pcap captured 2026-04-14.
+
+---
+
+## 9. Pcap Evidence Summary
 
 ### Observations (2026-04-01)
 
@@ -368,3 +677,26 @@ XLX reflectors are multi-protocol. The XLX client in `internal/protocol/xlx/` im
 | TX header FLAG1 | 0x02 (RS-MS3W uses FLAG1=0x02, Doozy uses FLAG1=0x01 — both work) |
 | TX voice | 9 frames (seq 0–8), silence AMBE, last frame has end flag + `55 C8 7A` AMBE |
 | Baud rate | **38400** (not 115200) — this is the key difference from prior failed macOS tests |
+
+### Observations (2026-04-14) — BlueDV ↔ TH-D75 USB-C
+
+| Observation | Details |
+|-------------|---------|
+| USB device | TH-D75 (VID `0x2166` PID `0x9023`), composite: CDC-ACM (interfaces 0+1) + USB Audio (interfaces 2+3) |
+| CDC endpoints | 0x01 OUT / 0x81 IN (bulk), 0x82 IN (interrupt) — single serial port |
+| Audio endpoint | 0x83 IN (isochronous, 48kHz 16-bit mono PCM) |
+| CDC setup | GET_LINE_CODING → SET_LINE_CODING(115200 8N1) — baud confirmed at 115200 |
+| Firmware version | Protocol v1, description `TH-D75 RTM1.00` |
+| Handshake timing | Port opened at t≈4.0s; version response at t=4.41s; handshake complete at t=5.04s |
+| Handshake sequence | GET_VERSION → SET_MODE(idle) → SET_FREQ(434.3MHz) → SET_CONFIG(v1, flags=0x82) → SET_MODE(D-STAR) |
+| SET_CONFIG flags | 0x82 = simplex(0x80) + txInvert(0x02) — txInvert is required |
+| SET_CONFIG size | 18 payload bytes (21 total), shorter than MMDVMHost's 23 payload (26 total) |
+| SET_FREQ size | 9 payload bytes (12 total) — no rfLevel or POCSAG fields (shorter than MMDVMHost's 14 payload) |
+| SET_MODE usage | Sent idle before SET_FREQ, D-STAR after SET_CONFIG, idle after EOT |
+| Status response | `E0 0A 01 01 01 00 7F 00 00 00` — enabledModes=0x01 (D-STAR), dstarSpace=127 |
+| Status polling | GET_STATUS sent every ~50-60ms during handshake, then interleaved with data during TX |
+| D-STAR TX header | 44 bytes: RPT2=`KR4GCQ C` RPT1=`KR4GCQ G` URCALL=`CQCQCQ  ` MYCALL=`KR4GCQ  ` MYCALL2=`Blue` |
+| D-STAR TX voice | 15-byte frames every ~5ms during TX burst |
+| D-STAR EOT | `E0 03 13` sent at end of transmission |
+| Post-EOT | SET_MODE(idle) sent ~5.5s after EOT |
+| No RX data seen | Pcap only captured TX (host → radio) D-STAR data; no incoming RF during capture |

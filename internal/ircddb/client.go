@@ -84,21 +84,15 @@ type Client struct {
 //   <lowercase_base_callsign>-<module_number>
 // where module letter maps to a 1-based number (A=1, B=2, … Z=26).
 // Example: "KR4GCQ D" → base "kr4gcq", module 'D'=4 → nick "kr4gcq-4"
+// A space suffix (bare callsign) defaults to module A → nick "kr4gcq-1".
 func New(callsign string) *Client {
-	cs := strings.ToUpper(strings.TrimSpace(callsign))
-	// Last character of the 8-char callsign is the module letter.
-	// Characters before it (trimmed of trailing spaces) are the base callsign.
-	module := byte('A')
-	base := cs
-	if len(cs) == 8 {
-		module = cs[7]
-		base = strings.TrimRight(cs[:7], " ")
-	} else if len(cs) > 0 {
-		module = cs[len(cs)-1]
-		base = strings.TrimRight(cs[:len(cs)-1], " ")
-	}
+	// Pad to 8 chars first so the module letter is always at position 7,
+	// even when the input has trailing spaces (e.g. "KR4GCQ  ").
+	padded := dstar.PadCallsign(strings.ToUpper(callsign), 8)
+	module := padded[7]
+	base := strings.TrimRight(padded[:7], " ")
 	if module < 'A' || module > 'Z' {
-		module = 'A'
+		module = 'A' // space or invalid → default to module A
 	}
 	moduleNum := int(module-'A') + 1
 	nick := fmt.Sprintf("%s-%d", strings.ToLower(base), moduleNum)

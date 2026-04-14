@@ -194,7 +194,12 @@ func (a *App) disconnect() {
 
 // openRadio opens the serial port for the radio.
 func (a *App) openRadio(portName string) {
-	sr := radio.NewSerialRadio()
+	var r radio.RadioInterface
+	if a.cfg.Radio.Protocol == "MMDVM" {
+		r = radio.NewMMDVMRadio()
+	} else {
+		r = radio.NewSerialRadio()
+	}
 	cfg := radio.Config{
 		Port:      portName,
 		BaudRate:  a.cfg.Radio.BaudRate,
@@ -203,11 +208,11 @@ func (a *App) openRadio(portName string) {
 		Parity:    a.cfg.Radio.Parity,
 		PTTViaRTS: a.cfg.Radio.PTTViaRTS,
 	}
-	if err := sr.Open(cfg); err != nil {
+	if err := r.Open(cfg); err != nil {
 		a.appendLog("Radio open error: " + err.Error())
 		return
 	}
-	a.radio = sr
+	a.radio = r
 	a.appendLog("Radio opened on " + portName)
 
 	if a.reflector != nil && a.reflector.State() == protocol.StateConnected {

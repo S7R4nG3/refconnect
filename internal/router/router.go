@@ -99,12 +99,11 @@ func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
 	if rt.cfg.MyCall == "" {
 		return
 	}
-	// RPT1 = local gateway callsign (e.g. "KR4GCQ G").
-	// Per ircddbGateway DPlusHandler: header.setRepeaters(m_callsign, m_reflector)
-	// where m_callsign is the local gateway call used as RPT1.
-	rpt1 := []byte(dstar.PadCallsign(rt.cfg.MyCall, 8))
-	rpt1[7] = 'G'
-	hdr.RPT1 = string(rpt1)
+	// RPT1 = local gateway callsign (e.g. "KR4GCQ  " or "KR4GCQ G").
+	// MyCall already encodes the correct 8th-character suffix chosen in the UI;
+	// overriding it here would mismatch the local module sent in the connect packet
+	// and cause XRF reflectors to silently drop the header.
+	hdr.RPT1 = dstar.PadCallsign(rt.cfg.MyCall, 8)
 	// RPT2 = reflector callsign + module (e.g. "REF001 C").
 	// The reflector validates that RPT2 matches its own callsign.
 	rpt2 := []byte(dstar.PadCallsign(rt.cfg.ReflectorCall, 8))
