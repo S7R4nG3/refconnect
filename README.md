@@ -4,7 +4,7 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 
 ![RefConnect Screenshot](docs/screenshot.png)
 
----
+--- 
 
 ## Features
 
