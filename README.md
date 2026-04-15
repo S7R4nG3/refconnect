@@ -61,7 +61,7 @@ Key settings:
 ```yaml
 version: 1
 callsign: N0CALL
-callsign_suffix: ' '
+callsign_suffix: G
 radio:
     port: /dev/cu.usbmodem1203
     protocol: DV-GW              # "DV-GW" (ICOM) or "MMDVM" (Kenwood)
@@ -82,7 +82,7 @@ ui:
 | Field | Description |
 |---|---|
 | `callsign` | Your amateur radio callsign |
-| `callsign_suffix` | Gateway module letter (e.g. `D`), or space for default |
+| `callsign_suffix` | Gateway module suffix (e.g. `G` for gateway). This is the 8th character of your callsign as shown in Via/Peer on reflector dashboards |
 | `radio.port` | Serial port path for your radio |
 | `radio.protocol` | `DV-GW` for ICOM radios, `MMDVM` for Kenwood radios. Baud rate is set automatically (38400 / 115200) |
 | `reflectors` | Saved reflector profiles, selectable from the Connect panel |
