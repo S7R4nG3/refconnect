@@ -1,7 +1,14 @@
 BINARY  = refconnect
 APP     = RefConnect.app
 ICON    = docs/antenna.png
-LDFLAGS = -ldflags="-extldflags=-Wl,-no_warn_duplicate_libraries"
+
+# macOS linker warns about duplicate libraries; suppress with ldflags.
+# Linux does not need this.
+ifeq ($(shell uname -s),Linux)
+  LDFLAGS =
+else
+  LDFLAGS = -ldflags="-extldflags=-Wl,-no_warn_duplicate_libraries"
+endif
 
 .PHONY: run build bundle icons-windows clean
 

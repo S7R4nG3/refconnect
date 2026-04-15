@@ -26,6 +26,8 @@ Tested radios:
 - ICOM IC-705 (USB-B, DV Gateway Terminal protocol)
 - Kenwood TH-D75 (USB-C, MMDVM protocol)
 
+> **macOS Bluetooth limitation:** The TH-D75 supports Bluetooth SPP, but macOS's DriverKit-based Bluetooth serial driver does not establish the RFCOMM channel when the virtual serial port is opened. This is an OS-level limitation — the `/dev/cu.*` device is created but no data flows. Use USB-C to connect the TH-D75 on macOS.
+
 ## Simple Setup
 
 MacOs & Linux:
@@ -46,6 +48,12 @@ Need make, git, and go 1.26+
 
 ```shell
 make build
+```
+
+Linux dependencies include:
+
+```
+libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libxxf86vm-dev
 ```
 
 ## Configuration
