@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	fyne.io/fyne/v2 v2.7.3
-	go.bug.st/serial v1.6.2
+	go.bug.st/serial v1.6.4
 	gopkg.in/yaml.v3 v3.0.1
 )
 
