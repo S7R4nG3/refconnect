@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"sync/atomic"
 
@@ -48,9 +49,10 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		typeNames[i] = rt.prefix
 	}
 
-	// hostLabel shows the dynamically constructed hostname so the user can
-	// verify it before connecting.
-	hostLabel := widget.NewLabel("")
+	// hostLink shows the dynamically constructed hostname as a clickable link
+	// so the user can verify it before connecting and jump to the reflector's
+	// status page.
+	hostLink := widget.NewHyperlink("—", nil)
 
 	selectedType := reflectorTypeByPrefix("REF")
 	currentID := "001"
@@ -60,7 +62,8 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 
 	updateHost := func() {
 		if currentID == "" {
-			hostLabel.SetText("—")
+			hostLink.SetText("—")
+			hostLink.SetURL(nil)
 			return
 		}
 		host := fmt.Sprintf("%s%s.%s",
@@ -68,7 +71,12 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			strings.ToLower(currentID),
 			strings.TrimSpace(domainEntry.Text),
 		)
-		hostLabel.SetText(host)
+		hostLink.SetText(host)
+		if u, err := url.Parse("http://" + host); err == nil {
+			hostLink.SetURL(u)
+		} else {
+			hostLink.SetURL(nil)
+		}
 	}
 
 	domainEntry.OnChanged = func(string) { updateHost() }
@@ -199,7 +207,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			widget.NewLabel("Type:"), typeSelect,
 			widget.NewLabel("ID:"), idEntry,
 			widget.NewLabel("Domain:"), domainEntry,
-			widget.NewLabel("Host:"), hostLabel,
+			widget.NewLabel("Host:"), hostLink,
 			widget.NewLabel("Module:"), moduleSelect,
 			widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
 		),
