@@ -19,6 +19,14 @@ func Default() *Config {
 				Protocol: "DPlus",
 			},
 		},
+		APRS: APRSConfig{
+			Enabled:               false,
+			Symbol:                ">",
+			SymbolTable:           "/",
+			Comment:               "RefConnect D-STAR",
+			BeaconIntervalMinutes: 30,
+			SendOnConnect:         true,
+		},
 		UI: UIConfig{
 			Theme:        "system",
 			LogMaxLines:  500,

@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/data/binding"
 
+	"github.com/S7R4nG3/refconnect/internal/aprs"
 	"github.com/S7R4nG3/refconnect/internal/config"
 	"github.com/S7R4nG3/refconnect/internal/ircddb"
 	"github.com/S7R4nG3/refconnect/internal/protocol"
@@ -19,6 +21,7 @@ import (
 	"github.com/S7R4nG3/refconnect/internal/protocol/xlx"
 	"github.com/S7R4nG3/refconnect/internal/radio"
 	"github.com/S7R4nG3/refconnect/internal/router"
+	"github.com/S7R4nG3/refconnect/internal/wakelock"
 )
 
 // App is the top-level application controller.
@@ -41,6 +44,16 @@ type App struct {
 	txActive    binding.Bool
 	linkState   binding.String
 	lastHeard   binding.String
+	aprsEnabled binding.Bool
+
+	// APRS beacon lifecycle. The ticker runs while a reflector is connected
+	// and aprsEnabled is true; stopAPRSCh signals it to exit.
+	aprsMu      sync.Mutex
+	stopAPRSCh  chan struct{}
+
+	// wake prevents the host from sleeping while a reflector link is up.
+	// Held between connect() and disconnect().
+	wake wakelock.Lock
 }
 
 // Run initialises the application and blocks until the window is closed.
@@ -53,9 +66,20 @@ func Run(cfg *config.Config) {
 		txActive:    binding.NewBool(),
 		linkState:   binding.NewString(),
 		lastHeard:   binding.NewString(),
+		aprsEnabled: binding.NewBool(),
 	}
-	a.statusText.Set("Disconnected") //nolint:errcheck
-	a.linkState.Set("Disconnected")  //nolint:errcheck
+	a.statusText.Set("Disconnected")     //nolint:errcheck
+	a.linkState.Set("Disconnected")      //nolint:errcheck
+	a.aprsEnabled.Set(cfg.APRS.Enabled) //nolint:errcheck
+	a.aprsEnabled.AddListener(binding.NewDataListener(func() {
+		on, _ := a.aprsEnabled.Get()
+		a.cfg.APRS.Enabled = on
+		if on {
+			a.startAPRS()
+		} else {
+			a.stopAPRS()
+		}
+	}))
 
 	a.fyneApp = app.NewWithID("org.refconnect.refconnect")
 
@@ -157,9 +181,24 @@ func (a *App) connect(entry config.ReflectorEntry) {
 		a.appendLog("Linked to " + entry.Name)
 		a.linkState.Set("Connected — " + entry.Name) //nolint:errcheck
 
+		// Keep the host awake for the duration of the link so the OS
+		// doesn't idle-sleep and drop reflector keepalives.
+		if a.wake == nil {
+			wl, err := wakelock.Acquire("RefConnect linked to " + entry.Name)
+			if err != nil {
+				a.appendLog("Wakelock unavailable: " + err.Error())
+			}
+			a.wake = wl
+		}
+
 		// If a radio is already open, start routing.
 		if a.radio != nil && a.radio.IsOpen() {
 			a.startRouter()
+		}
+
+		// Start the APRS beacon loop if the user has it enabled.
+		if a.cfg.APRS.Enabled {
+			a.startAPRS()
 		}
 
 		// Forward reflector events to the log.
@@ -174,6 +213,7 @@ func (a *App) connect(entry config.ReflectorEntry) {
 
 // disconnect gracefully unlinks from the current reflector and de-registers from ircDDB.
 func (a *App) disconnect() {
+	a.stopAPRS()
 	if a.rt != nil {
 		a.rt.Stop()
 		a.rt = nil
@@ -188,8 +228,94 @@ func (a *App) disconnect() {
 		a.irc.Stop()
 		a.irc = nil
 	}
+	if a.wake != nil {
+		a.wake.Release()
+		a.wake = nil
+	}
 	a.linkState.Set("Disconnected") //nolint:errcheck
 	a.appendLog("Disconnected.")
+}
+
+// startAPRS begins a goroutine that sends a DPRS beacon on connect (if
+// configured) and thereafter on a ticker. It is idempotent.
+func (a *App) startAPRS() {
+	a.aprsMu.Lock()
+	defer a.aprsMu.Unlock()
+	if a.stopAPRSCh != nil {
+		return // already running
+	}
+	stop := make(chan struct{})
+	a.stopAPRSCh = stop
+
+	interval := time.Duration(a.cfg.APRS.BeaconIntervalMinutes) * time.Minute
+	if interval <= 0 {
+		interval = 30 * time.Minute
+	}
+	sendOnConnect := a.cfg.APRS.SendOnConnect
+
+	go func() {
+		if sendOnConnect {
+			// Delay slightly so the link settles before the first beacon.
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Second):
+				a.sendBeacon()
+			}
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				a.sendBeacon()
+			}
+		}
+	}()
+	a.appendLog("APRS beacon enabled.")
+}
+
+// stopAPRS halts the beacon goroutine if it is running.
+func (a *App) stopAPRS() {
+	a.aprsMu.Lock()
+	defer a.aprsMu.Unlock()
+	if a.stopAPRSCh == nil {
+		return
+	}
+	close(a.stopAPRSCh)
+	a.stopAPRSCh = nil
+}
+
+// sendBeacon constructs a DPRS position packet from the current GPS cache
+// and transmits it via the router. It is a no-op if the router is not
+// connected or we have no GPS fix yet.
+func (a *App) sendBeacon() {
+	if a.rt == nil {
+		return
+	}
+	pos, _, ok := a.rt.GPS().Get()
+	if !ok {
+		a.appendLog("APRS: no GPS fix yet — transmit once to cache a position.")
+		return
+	}
+	call := strings.ToUpper(strings.TrimSpace(a.cfg.Callsign))
+	symTable := byte('/')
+	if len(a.cfg.APRS.SymbolTable) > 0 {
+		symTable = a.cfg.APRS.SymbolTable[0]
+	}
+	symChar := byte('>')
+	if len(a.cfg.APRS.Symbol) > 0 {
+		symChar = a.cfg.APRS.Symbol[0]
+	}
+	tnc2 := aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment)
+	sentence := aprs.WrapDPRS(tnc2)
+	if err := a.rt.SendBeacon(sentence); err != nil {
+		a.appendLog("APRS beacon failed: " + err.Error())
+		return
+	}
+	a.appendLog(fmt.Sprintf("APRS beacon sent (%.5f, %.5f).", pos.Lat, pos.Lon))
 }
 
 // openRadio opens the serial port for the radio.

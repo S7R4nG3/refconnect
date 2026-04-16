@@ -18,7 +18,21 @@ type Config struct {
 	Radio              RadioConfig      `yaml:"radio"`
 	Reflectors         []ReflectorEntry `yaml:"reflectors"`
 	LastUsedReflector  string           `yaml:"last_used_reflector"`
+	APRS               APRSConfig       `yaml:"aprs"`
 	UI                 UIConfig         `yaml:"ui"`
+}
+
+// APRSConfig holds settings for DPRS (APRS over D-STAR slow data) beaconing.
+// Position is read from the connected radio's GPS (via DPRS in the slow-data
+// stream); only the presentation fields are configured here. The beacon uses
+// the main callsign with a static "-1" SSID (APRS "Primary Station").
+type APRSConfig struct {
+	Enabled              bool   `yaml:"enabled"`
+	Symbol               string `yaml:"symbol"`        // APRS symbol character, e.g. ">" (car), "-" (house)
+	SymbolTable          string `yaml:"symbol_table"`  // "/" (primary) or "\\" (alternate)
+	Comment              string `yaml:"comment"`       // APRS status text appended to position reports
+	BeaconIntervalMinutes int   `yaml:"beacon_interval_minutes"`
+	SendOnConnect        bool   `yaml:"send_on_connect"`
 }
 
 // RadioConfig holds serial port settings for the connected radio.

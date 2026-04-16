@@ -16,33 +16,6 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 - Dark, light, or system theme support
 - Timestamped activity log
 
-## Requirements
-
-- macOS, Windows, or Linux
-- A D-STAR capable radio connected via USB
-
-Tested radios:
-
-- ICOM IC-705 (USB-B, DV Gateway Terminal protocol)
-- Kenwood TH-D75 (USB-C/Bluetooth, MMDVM protocol)
-
-> **Linux Bluetooth:** The TH-D75 can connect via Bluetooth on Linux using a traditional `rfcomm bind` setup:
->
-> 1. **Enable legacy SPP in BlueZ.** Edit the `bluetoothd` service unit (e.g. `sudo systemctl edit --full bluetooth.service`) and add the `--compat` flag to `ExecStart`:
->     ```
->     ExecStart=/usr/lib/bluetooth/bluetoothd --compat
->     ```
->    Then reload and restart the service:
->     ```shell
->     sudo systemctl daemon-reload
->     sudo systemctl restart bluetooth
->     ```
-> 2. **Pair the radio** using the Blueman applet (`blueman-manager`): click **Search**, select your TH-D75 when it appears, and click **Pair**. If prompted, also mark the device as **Trusted**.
-> 3. **Connect the serial port** from the same Blueman window: right-click the paired TH-D75 and choose **Connect To → Serial Port**. Blueman will create an rfcomm device (typically `/dev/rfcomm0`) and show a notification confirming the path.
-> 4. **Select `/dev/rfcomm0`** in the RefConnect port dropdown and click **Open** — it appears alongside other serial ports.
-
-> **macOS Bluetooth limitation:** The TH-D75 supports Bluetooth SPP, but macOS's DriverKit-based Bluetooth serial driver does not establish the RFCOMM channel when the virtual serial port is opened. This is an OS-level limitation — the `/dev/cu.*` device is created but no data flows. Use USB-C to connect the TH-D75 on macOS.
-
 ## Simple Setup
 
 MacOs & Linux:
@@ -57,19 +30,8 @@ Windows:
 iwr -useb https://raw.githubusercontent.com/S7R4nG3/refconnect/main/configs/setup.ps1 | iex
 ```
 
-## Building
+Check out the [Wiki](https://github.com/S7R4nG3/refconnect/wiki) for more information!
 
-Need make, git, and go 1.26+
-
-```shell
-make build
-```
-
-Linux dependencies include:
-
-```
-libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libxxf86vm-dev
-```
 
 ## Configuration
 
