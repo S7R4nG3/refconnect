@@ -26,6 +26,8 @@ Tested radios:
 - ICOM IC-705 (USB-B, DV Gateway Terminal protocol)
 - Kenwood TH-D75 (USB-C, MMDVM protocol)
 
+> **Linux Bluetooth:** The TH-D75 can connect via Bluetooth on Linux. Pair the radio via system Bluetooth settings first — paired devices will appear in the port dropdown automatically. Requires `bluetoothctl` (BlueZ) for device discovery.
+
 > **macOS Bluetooth limitation:** The TH-D75 supports Bluetooth SPP, but macOS's DriverKit-based Bluetooth serial driver does not establish the RFCOMM channel when the virtual serial port is opened. This is an OS-level limitation — the `/dev/cu.*` device is created but no data flows. Use USB-C to connect the TH-D75 on macOS.
 
 ## Simple Setup

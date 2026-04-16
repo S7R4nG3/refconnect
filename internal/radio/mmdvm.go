@@ -63,34 +63,41 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 		return fmt.Errorf("mmdvm: already open")
 	}
 
-	// MMDVM protocol always uses 115200 baud (confirmed by BlueDV pcap).
-	baud := 115200
-
-	mode := &serial.Mode{
-		BaudRate: baud,
-		DataBits: 8,
-		StopBits: serial.OneStopBit,
-		Parity:   serial.NoParity,
-	}
-	p, err := serial.Open(cfg.Port, mode)
-	if err != nil {
-		return fmt.Errorf("mmdvm: open %s: %w", cfg.Port, err)
-	}
-
-	// Set DTR high — required for TH-D75 (confirmed by BlueDV docs).
-	if err := p.SetDTR(true); err != nil {
-		log.Printf("mmdvm: warning: SetDTR failed: %v", err)
-	}
-	// Set RTS high (DroidStar does this).
-	if err := p.SetRTS(true); err != nil {
-		log.Printf("mmdvm: warning: SetRTS failed: %v", err)
+	var p serial.Port
+	if IsBTAddress(cfg.Port) {
+		bt, err := OpenRFCOMM(cfg.Port)
+		if err != nil {
+			return fmt.Errorf("mmdvm: %w", err)
+		}
+		p = bt
+	} else {
+		// MMDVM protocol always uses 115200 baud (confirmed by BlueDV pcap).
+		mode := &serial.Mode{
+			BaudRate: 115200,
+			DataBits: 8,
+			StopBits: serial.OneStopBit,
+			Parity:   serial.NoParity,
+		}
+		sp, err := serial.Open(cfg.Port, mode)
+		if err != nil {
+			return fmt.Errorf("mmdvm: open %s: %w", cfg.Port, err)
+		}
+		// Set DTR high — required for TH-D75 (confirmed by BlueDV docs).
+		if err := sp.SetDTR(true); err != nil {
+			log.Printf("mmdvm: warning: SetDTR failed: %v", err)
+		}
+		// Set RTS high (DroidStar does this).
+		if err := sp.SetRTS(true); err != nil {
+			log.Printf("mmdvm: warning: SetRTS failed: %v", err)
+		}
+		p = sp
 	}
 
 	m.port = p
 	m.cfg = cfg
 	m.open = true
 	m.stopCh = make(chan struct{})
-	log.Printf("mmdvm: opened %s at %d baud", cfg.Port, baud)
+	log.Printf("mmdvm: opened %s", cfg.Port)
 
 	// Give the modem time to initialize after port opens (per MMDVMHost).
 	log.Printf("mmdvm: waiting 2s for modem to initialize…")

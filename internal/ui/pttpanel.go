@@ -10,6 +10,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/S7R4nG3/refconnect/internal/radio"
 )
 
 // radioProtocols maps display labels to config values.
@@ -23,10 +25,7 @@ var radioProtocolLabels = []string{"ICOM (DV Gateway)", "Kenwood (MMDVM)"}
 // Selections are written back to a.cfg.Radio immediately on change
 // so that the reflector Connect button can open the radio with current values.
 func buildPTTPanel(a *App) fyne.CanvasObject {
-	ports, _ := serial.GetPortsList()
-	if len(ports) == 0 {
-		ports = []string{"(no ports found)"}
-	}
+	ports, btNames := listAllPorts()
 
 	protoSelect := widget.NewSelect(radioProtocolLabels, func(label string) {
 		if val, ok := radioProtocols[label]; ok {
@@ -45,7 +44,7 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		a.cfg.Radio.Protocol = "DV-GW"
 	}
 
-	labeledPorts := labelPorts(ports)
+	labeledPorts := labelPorts(ports, btNames)
 
 	portSelect := widget.NewSelect(labeledPorts, func(p string) {
 		a.cfg.Radio.Port = stripPortLabel(p)
@@ -62,11 +61,8 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	}
 
 	refreshBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
-		newPorts, _ := serial.GetPortsList()
-		if len(newPorts) == 0 {
-			newPorts = []string{"(no ports found)"}
-		}
-		newLabeled := labelPorts(newPorts)
+		newPorts, newBTNames := listAllPorts()
+		newLabeled := labelPorts(newPorts, newBTNames)
 		portSelect.Options = newLabeled
 		// Preserve current selection if still available.
 		currentRaw := stripPortLabel(portSelect.Selected)
@@ -97,22 +93,40 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	)
 }
 
+// listAllPorts returns all available serial ports plus paired Bluetooth devices,
+// and a map of BT addresses to device names for labeling.
+func listAllPorts() (ports []string, btNames map[string]string) {
+	ports, _ = serial.GetPortsList()
+	btNames = make(map[string]string)
+	for _, bt := range radio.ListBTDevices() {
+		ports = append(ports, bt.Addr)
+		btNames[bt.Addr] = bt.Name
+	}
+	if len(ports) == 0 {
+		ports = []string{"(no ports found)"}
+	}
+	return
+}
+
 // isBTPort returns true if the port name looks like a Bluetooth SPP device.
 func isBTPort(name string) bool {
 	switch runtime.GOOS {
 	case "darwin":
 		return strings.Contains(name, "Bluetooth") || strings.Contains(name, "-SerialPort")
 	case "linux":
-		return strings.HasPrefix(name, "/dev/rfcomm")
+		return strings.HasPrefix(name, "/dev/rfcomm") || radio.IsBTAddress(name)
 	}
 	return false
 }
 
-// labelPorts annotates Bluetooth ports with a (BT) suffix for display.
-func labelPorts(ports []string) []string {
+// labelPorts annotates Bluetooth ports with a suffix for display.
+// btNames maps BT MAC addresses to their human-readable device names.
+func labelPorts(ports []string, btNames map[string]string) []string {
 	out := make([]string, len(ports))
 	for i, p := range ports {
-		if isBTPort(p) {
+		if name, ok := btNames[p]; ok {
+			out[i] = p + "  (BT: " + name + ")"
+		} else if isBTPort(p) {
 			out[i] = p + "  (BT)"
 		} else {
 			out[i] = p
@@ -121,7 +135,10 @@ func labelPorts(ports []string) []string {
 	return out
 }
 
-// stripPortLabel removes the (BT) annotation to get the raw port path.
+// stripPortLabel removes the BT annotation to get the raw port path or address.
 func stripPortLabel(labeled string) string {
-	return strings.TrimSuffix(labeled, "  (BT)")
+	if idx := strings.Index(labeled, "  (BT"); idx >= 0 {
+		return labeled[:idx]
+	}
+	return labeled
 }
