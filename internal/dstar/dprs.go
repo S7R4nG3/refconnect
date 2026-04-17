@@ -16,19 +16,39 @@ package dstar
 // gpsSegHeaderMask is the high nibble that marks a GPS-data slow-data segment.
 const gpsSegHeaderMask = 0x30
 
+// nextDataSeq advances seq by one (mod 21). If the new seq lands on a
+// sync frame (0), the sync triplet is appended to out and seq advances
+// again so the caller always gets a data-frame sequence number.
+func nextDataSeq(seq uint8, out *[][3]byte) uint8 {
+	seq = (seq + 1) % (MaxSeq + 1)
+	if seq == 0 {
+		*out = append(*out, SyncSlowData)
+		seq = (seq + 1) % (MaxSeq + 1)
+	}
+	return seq
+}
+
 // EncodeDPRSFrames chunks a DPRS sentence into scrambled slow-data triplets,
 // one per outgoing D-STAR voice frame. startSeq is the sequence number of
 // the first emitted frame; each subsequent frame increments seq (mod 21),
 // matching how the voice TX path numbers frames.
 //
+// Sync frames (seq == 0) are automatically inserted with the D-STAR sync
+// pattern so that receivers can locate superframe boundaries.
+//
 // Returns a slice of [3]byte triplets (already scrambled) ready to drop
-// into consecutive DVFrame.SlowData fields. The number of triplets is
-// always even (segments are 2 frames long); pad with NullSlowData if you
-// need to align the beacon transmission to a specific frame count.
+// into consecutive DVFrame.SlowData fields.
 func EncodeDPRSFrames(sentence string, startSeq uint8) [][3]byte {
 	data := []byte(sentence)
 	var out [][3]byte
 	seq := startSeq
+
+	// If we're starting on a sync frame, emit sync first.
+	if seq == 0 {
+		out = append(out, SyncSlowData)
+		seq = (seq + 1) % (MaxSeq + 1)
+	}
+
 	for i := 0; i < len(data); i += 5 {
 		end := i + 5
 		if end > len(data) {
@@ -42,9 +62,9 @@ func EncodeDPRSFrames(sentence string, startSeq uint8) [][3]byte {
 		copy(seg[1:], chunk)
 		// Emit across two consecutive voice frames.
 		out = append(out, ScrambleSlowData([3]byte{seg[0], seg[1], seg[2]}, seq))
-		seq = (seq + 1) % (MaxSeq + 1)
+		seq = nextDataSeq(seq, &out)
 		out = append(out, ScrambleSlowData([3]byte{seg[3], seg[4], seg[5]}, seq))
-		seq = (seq + 1) % (MaxSeq + 1)
+		seq = nextDataSeq(seq, &out)
 	}
 	return out
 }
@@ -66,6 +86,10 @@ type DPRSDecoder struct {
 // complete DPRS sentences that finished as a result of this frame; zero,
 // one, or occasionally more sentences may be returned per call.
 func (d *DPRSDecoder) Feed(scrambled [3]byte, seq uint8) []string {
+	// Skip sync frames — they carry the sync pattern, not GPS data.
+	if seq%21 == 0 {
+		return nil
+	}
 	unscrambled := ScrambleSlowData(scrambled, seq)
 	if !d.haveHalf {
 		d.halfSeg = unscrambled

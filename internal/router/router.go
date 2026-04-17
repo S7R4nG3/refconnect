@@ -90,9 +90,9 @@ func (rt *Router) GPS() *aprs.Cache { return rt.gps }
 
 // SendBeacon synthesises a DPRS transmission and writes it to the
 // reflector. It blocks until the current user voice transmission (if any)
-// completes so frames never interleave. Returns an error if no reflector
-// is connected.
-func (rt *Router) SendBeacon(dprsSentence string) error {
+// completes so frames never interleave. Returns the DVHeader that was
+// sent (for ircDDB announcement) and any error.
+func (rt *Router) SendBeacon(dprsSentence string) (dstar.DVHeader, error) {
 	rt.txMu.Lock()
 	defer rt.txMu.Unlock()
 	return beacon.Send(rt.reflector, rt.cfg.MyCall,

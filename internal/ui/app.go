@@ -50,6 +50,7 @@ type App struct {
 	// and aprsEnabled is true; stopAPRSCh signals it to exit.
 	aprsMu      sync.Mutex
 	stopAPRSCh  chan struct{}
+	aprsIS      *aprs.APRSISClient
 
 	// wake prevents the host from sleeping while a reflector link is up.
 	// Held between connect() and disconnect().
@@ -228,6 +229,10 @@ func (a *App) disconnect() {
 		a.irc.Stop()
 		a.irc = nil
 	}
+	if a.aprsIS != nil {
+		a.aprsIS.Close()
+		a.aprsIS = nil
+	}
 	if a.wake != nil {
 		a.wake.Release()
 		a.wake = nil
@@ -288,18 +293,28 @@ func (a *App) stopAPRS() {
 	a.stopAPRSCh = nil
 }
 
-// sendBeacon constructs a DPRS position packet from the current GPS cache
-// and transmits it via the router. It is a no-op if the router is not
-// connected or we have no GPS fix yet.
+// sendBeacon constructs a DPRS position packet and transmits it via the
+// router (to the reflector) and via APRS-IS (to aprs.fi). Position comes
+// from the radio's GPS cache when available, falling back to the static
+// latitude/longitude in the config.
 func (a *App) sendBeacon() {
 	if a.rt == nil {
 		return
 	}
-	pos, _, ok := a.rt.GPS().Get()
-	if !ok {
-		a.appendLog("APRS: no GPS fix yet — transmit once to cache a position.")
+
+	// Resolve position: prefer live GPS from radio, fall back to config.
+	var pos aprs.Position
+	if p, _, ok := a.rt.GPS().Get(); ok {
+		pos = p
+		a.appendLog("APRS: using GPS fix from radio.")
+	} else if a.cfg.APRS.Latitude != 0 || a.cfg.APRS.Longitude != 0 {
+		pos = aprs.Position{Lat: a.cfg.APRS.Latitude, Lon: a.cfg.APRS.Longitude}
+		a.appendLog("APRS: using static position from config.")
+	} else {
+		a.appendLog("APRS: no position available — set latitude/longitude in config or transmit to cache a GPS fix.")
 		return
 	}
+
 	call := strings.ToUpper(strings.TrimSpace(a.cfg.Callsign))
 	symTable := byte('/')
 	if len(a.cfg.APRS.SymbolTable) > 0 {
@@ -311,9 +326,24 @@ func (a *App) sendBeacon() {
 	}
 	tnc2 := aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment)
 	sentence := aprs.WrapDPRS(tnc2)
-	if err := a.rt.SendBeacon(sentence); err != nil {
+	hdr, err := a.rt.SendBeacon(sentence)
+	if err != nil {
 		a.appendLog("APRS beacon failed: " + err.Error())
 		return
+	}
+	// Announce the beacon header to ircDDB so it appears in routing tables
+	// and Last Heard pages.
+	if a.irc != nil {
+		a.irc.AnnounceUser(hdr)
+	}
+	// Forward the position report to APRS-IS so it appears on aprs.fi.
+	if a.aprsIS == nil {
+		a.aprsIS = aprs.NewAPRSISClient(call, "RefConnect", "0.7.0")
+	}
+	if err := a.aprsIS.Send(tnc2); err != nil {
+		a.appendLog("APRS-IS: " + err.Error())
+	} else {
+		a.appendLog("APRS-IS: position forwarded.")
 	}
 	a.appendLog(fmt.Sprintf("APRS beacon sent (%.5f, %.5f).", pos.Lat, pos.Lon))
 }

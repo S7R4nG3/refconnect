@@ -23,16 +23,20 @@ type Config struct {
 }
 
 // APRSConfig holds settings for DPRS (APRS over D-STAR slow data) beaconing.
-// Position is read from the connected radio's GPS (via DPRS in the slow-data
-// stream); only the presentation fields are configured here. The beacon uses
-// the main callsign with a static "-1" SSID (APRS "Primary Station").
+// Position can come from the radio's GPS (via DPRS in the slow-data stream)
+// or from a static Latitude/Longitude configured here. When both are
+// available the radio GPS takes priority; when neither is set the beacon
+// is skipped until a fix arrives. The beacon uses the main callsign with a
+// static "-1" SSID (APRS "Primary Station").
 type APRSConfig struct {
-	Enabled              bool   `yaml:"enabled"`
-	Symbol               string `yaml:"symbol"`        // APRS symbol character, e.g. ">" (car), "-" (house)
-	SymbolTable          string `yaml:"symbol_table"`  // "/" (primary) or "\\" (alternate)
-	Comment              string `yaml:"comment"`       // APRS status text appended to position reports
-	BeaconIntervalMinutes int   `yaml:"beacon_interval_minutes"`
-	SendOnConnect        bool   `yaml:"send_on_connect"`
+	Enabled              bool    `yaml:"enabled"`
+	Symbol               string  `yaml:"symbol"`        // APRS symbol character, e.g. ">" (car), "-" (house)
+	SymbolTable          string  `yaml:"symbol_table"`  // "/" (primary) or "\\" (alternate)
+	Comment              string  `yaml:"comment"`       // APRS status text appended to position reports
+	BeaconIntervalMinutes int    `yaml:"beacon_interval_minutes"`
+	SendOnConnect        bool    `yaml:"send_on_connect"`
+	Latitude             float64 `yaml:"latitude"`      // static fallback latitude (decimal degrees, + = N)
+	Longitude            float64 `yaml:"longitude"`     // static fallback longitude (decimal degrees, + = E)
 }
 
 // RadioConfig holds serial port settings for the connected radio.

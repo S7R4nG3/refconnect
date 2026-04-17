@@ -7,6 +7,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/S7R4nG3/refconnect/internal/config"
 )
 
 // radioProtocols maps display labels to config values.
@@ -16,15 +18,42 @@ var radioProtocols = map[string]string{
 }
 var radioProtocolLabels = []string{"ICOM (DV Gateway)", "Kenwood (MMDVM)"}
 
-// buildPTTPanel returns the serial port and protocol selectors.
-// Selections are written back to a.cfg.Radio immediately on change
-// so that the reflector Connect button can open the radio with current values.
-func buildPTTPanel(a *App) fyne.CanvasObject {
+// refreshPorts enumerates serial ports and updates the Select widget.
+// It preserves the current selection when possible and falls back to
+// the first available port (or the config-saved port) otherwise.
+func refreshPorts(portSelect *widget.Select, cfg *config.Config) {
 	ports, _ := serial.GetPortsList()
 	if len(ports) == 0 {
 		ports = []string{"(no ports found)"}
 	}
+	portSelect.Options = ports
 
+	// Try to keep the current selection; fall back to config, then first port.
+	current := portSelect.Selected
+	best := ""
+	for _, p := range ports {
+		if p == current {
+			best = p
+			break
+		}
+		if p == cfg.Radio.Port && best == "" {
+			best = p
+		}
+	}
+	if best == "" && len(ports) > 0 && ports[0] != "(no ports found)" {
+		best = ports[0]
+	}
+	if best != "" {
+		portSelect.SetSelected(best)
+		cfg.Radio.Port = best
+	}
+	portSelect.Refresh()
+}
+
+// buildPTTPanel returns the serial port and protocol selectors.
+// Selections are written back to a.cfg.Radio immediately on change
+// so that the reflector Connect button can open the radio with current values.
+func buildPTTPanel(a *App) fyne.CanvasObject {
 	protoSelect := widget.NewSelect(radioProtocolLabels, func(label string) {
 		if val, ok := radioProtocols[label]; ok {
 			a.cfg.Radio.Protocol = val
@@ -42,42 +71,20 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		a.cfg.Radio.Protocol = "DV-GW"
 	}
 
-	portSelect := widget.NewSelect(ports, func(p string) {
-		a.cfg.Radio.Port = p
-	})
-	for _, p := range ports {
-		if p == a.cfg.Radio.Port {
-			portSelect.SetSelected(p)
-			break
+	// Start with a placeholder; enumerate ports in the background so
+	// the window appears immediately (serial enumeration is slow on Windows).
+	portSelect := widget.NewSelect([]string{"scanning…"}, func(p string) {
+		if p != "scanning…" && p != "(no ports found)" {
+			a.cfg.Radio.Port = p
 		}
-	}
-	if portSelect.Selected == "" && len(ports) > 0 {
-		portSelect.SetSelected(ports[0])
-		a.cfg.Radio.Port = ports[0]
-	}
+	})
 
 	refreshBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
-		newPorts, _ := serial.GetPortsList()
-		if len(newPorts) == 0 {
-			newPorts = []string{"(no ports found)"}
-		}
-		portSelect.Options = newPorts
-		// Preserve current selection if still available.
-		current := portSelect.Selected
-		found := false
-		for _, p := range newPorts {
-			if p == current {
-				portSelect.SetSelected(p)
-				found = true
-				break
-			}
-		}
-		if !found && len(newPorts) > 0 {
-			portSelect.SetSelected(newPorts[0])
-			a.cfg.Radio.Port = newPorts[0]
-		}
-		portSelect.Refresh()
+		refreshPorts(portSelect, a.cfg)
 	})
+
+	// Kick off the initial port scan in the background.
+	go refreshPorts(portSelect, a.cfg)
 
 	portRow := container.NewBorder(nil, nil, nil, refreshBtn, portSelect)
 

@@ -80,6 +80,24 @@ func TestParseTNC2(t *testing.T) {
 	}
 }
 
+func TestAPRSPasscode(t *testing.T) {
+	// Known APRS-IS passcode values (widely published test vectors).
+	tests := []struct {
+		call string
+		want int16
+	}{
+		{"N0CALL", 13023},
+		{"n0call", 13023}, // case-insensitive
+		{"N0CALL-5", 13023}, // SSID stripped
+	}
+	for _, tt := range tests {
+		got := aprsPasscode(tt.call)
+		if got != tt.want {
+			t.Errorf("aprsPasscode(%q) = %d, want %d", tt.call, got, tt.want)
+		}
+	}
+}
+
 func TestCache(t *testing.T) {
 	var c Cache
 	if _, _, ok := c.Get(); ok {

@@ -31,8 +31,9 @@ const HeaderBytes = 41
 // FrameBytes is the wire size of a DV voice payload (AMBE + slow data).
 const FrameBytes = 12
 
-// MaxSeq is the maximum sequence number before it wraps back to 0.
-const MaxSeq = 21
+// MaxSeq is the maximum D-STAR voice sequence number (0–20 inclusive).
+// A superframe is 21 frames: frame 0 carries sync, frames 1–20 carry data.
+const MaxSeq = 20
 
 // SilenceAMBE is the standard 72-bit AMBE+2 silence pattern.
 // Transmit this when audio is not available to fill a frame gracefully.
