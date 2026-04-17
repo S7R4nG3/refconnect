@@ -1,3 +1,9 @@
+## v0.7.1 (2026-04-17)
+
+### Fix
+
+- **internal/**: some windows launch performance fixes
+
 ## v0.7.0 (2026-04-17)
 
 ### Feat
