@@ -81,6 +81,8 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 
 	portRow := container.NewBorder(nil, nil, nil, refreshBtn, portSelect)
 
+	aprsCheck := widget.NewCheckWithData("Enable APRS", a.aprsEnabled)
+
 	return container.NewVBox(
 		widget.NewLabel("Radio"),
 		container.NewGridWithColumns(2,
@@ -88,6 +90,7 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 			protoSelect,
 		),
 		portRow,
+		aprsCheck,
 	)
 }
 

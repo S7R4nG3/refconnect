@@ -201,8 +201,6 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		}()
 	}
 
-	aprsCheck := widget.NewCheckWithData("Enable APRS", a.aprsEnabled)
-
 	return container.NewVBox(
 		widget.NewLabel("Reflector"),
 		container.NewGridWithColumns(2,
@@ -213,7 +211,6 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			widget.NewLabel("Module:"), moduleSelect,
 			widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
 		),
-		aprsCheck,
 		toggleBtn,
 	)
 }
