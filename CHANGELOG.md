@@ -1,3 +1,9 @@
+## v0.7.2 (2026-04-17)
+
+### Fix
+
+- **logging**: Addinga  fix for the log pruning that was nuking logs right after they were created
+
 ## v0.7.1 (2026-04-17)
 
 ### Fix
