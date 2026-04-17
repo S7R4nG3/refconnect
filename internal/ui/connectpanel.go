@@ -191,13 +191,15 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		go func() {
 			a.openRadio(a.cfg.Radio.Port)
 			if a.radio == nil || !a.radio.IsOpen() {
-				toggleBtn.Enable()
+				fyne.Do(func() { toggleBtn.Enable() })
 				return
 			}
 			a.connect(entry)
 			connected.Store(true)
-			toggleBtn.SetText("Disconnect")
-			toggleBtn.Enable()
+			fyne.Do(func() {
+				toggleBtn.SetText("Disconnect")
+				toggleBtn.Enable()
+			})
 		}()
 	}
 

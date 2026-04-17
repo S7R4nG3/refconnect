@@ -69,20 +69,26 @@ func Run(cfg *config.Config) {
 		lastHeard:   binding.NewString(),
 		aprsEnabled: binding.NewBool(),
 	}
-	a.statusText.Set("Disconnected")     //nolint:errcheck
-	a.linkState.Set("Disconnected")      //nolint:errcheck
-	a.aprsEnabled.Set(cfg.APRS.Enabled) //nolint:errcheck
-	a.aprsEnabled.AddListener(binding.NewDataListener(func() {
-		on, _ := a.aprsEnabled.Get()
-		a.cfg.APRS.Enabled = on
-		if on {
-			a.startAPRS()
-		} else {
-			a.stopAPRS()
-		}
-	}))
-
 	a.fyneApp = app.NewWithID("org.refconnect.refconnect")
+
+	// Set initial binding values and register listeners after the app is
+	// created so Fyne's event loop can dispatch them properly.  The
+	// AddListener callback fires immediately on registration, so it must
+	// run inside SetOnStarted (not on the main goroutine).
+	a.fyneApp.Lifecycle().SetOnStarted(func() {
+		a.statusText.Set("Disconnected")     //nolint:errcheck
+		a.linkState.Set("Disconnected")      //nolint:errcheck
+		a.aprsEnabled.Set(cfg.APRS.Enabled) //nolint:errcheck
+		a.aprsEnabled.AddListener(binding.NewDataListener(func() {
+			on, _ := a.aprsEnabled.Get()
+			a.cfg.APRS.Enabled = on
+			if on {
+				a.startAPRS()
+			} else {
+				a.stopAPRS()
+			}
+		}))
+	})
 
 	a.fyneApp.Settings().SetTheme(&refconnectTheme{})
 
@@ -103,16 +109,18 @@ func Run(cfg *config.Config) {
 // appendLog adds a timestamped line to the log binding (safe from any goroutine).
 func (a *App) appendLog(msg string) {
 	line := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg)
-	lines, _ := a.logLines.Get()
-	maxLines := a.cfg.UI.LogMaxLines
-	if maxLines <= 0 {
-		maxLines = 500
-	}
-	lines = append([]string{line}, lines...)
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-	}
-	a.logLines.Set(lines) //nolint:errcheck
+	fyne.Do(func() {
+		lines, _ := a.logLines.Get()
+		maxLines := a.cfg.UI.LogMaxLines
+		if maxLines <= 0 {
+			maxLines = 500
+		}
+		lines = append([]string{line}, lines...)
+		if len(lines) > maxLines {
+			lines = lines[:maxLines]
+		}
+		a.logLines.Set(lines) //nolint:errcheck
+	})
 }
 
 // connect establishes a reflector link using the current UI settings.
@@ -163,7 +171,7 @@ func (a *App) connect(entry config.ReflectorEntry) {
 
 	a.appendLog(fmt.Sprintf("Connecting to %s (%s:%d module %s) via %s…",
 		entry.Name, entry.Host, entry.Port, entry.Module, entry.Protocol))
-	a.linkState.Set("Connecting…") //nolint:errcheck
+	fyne.Do(func() { a.linkState.Set("Connecting…") }) //nolint:errcheck
 
 	irc := a.irc
 	go func() {
@@ -175,12 +183,12 @@ func (a *App) connect(entry config.ReflectorEntry) {
 		if err := ref.Connect(cfg); err != nil {
 			log.Printf("connect: failed to %s: %v", entry.Host, err)
 			a.appendLog("Connect failed: " + err.Error())
-			a.linkState.Set("Error: " + err.Error()) //nolint:errcheck
+			fyne.Do(func() { a.linkState.Set("Error: " + err.Error()) }) //nolint:errcheck
 			return
 		}
 		log.Printf("connect: linked to %s", entry.Host)
 		a.appendLog("Linked to " + entry.Name)
-		a.linkState.Set("Connected — " + entry.Name) //nolint:errcheck
+		fyne.Do(func() { a.linkState.Set("Connected — " + entry.Name) }) //nolint:errcheck
 
 		// Keep the host awake for the duration of the link so the OS
 		// doesn't idle-sleep and drop reflector keepalives.
@@ -206,7 +214,7 @@ func (a *App) connect(entry config.ReflectorEntry) {
 		go func() {
 			for evt := range ref.Events() {
 				a.appendLog(evt.Message)
-				a.linkState.Set(evt.State.String()) //nolint:errcheck
+				fyne.Do(func() { a.linkState.Set(evt.State.String()) }) //nolint:errcheck
 			}
 		}()
 	}()
@@ -237,7 +245,7 @@ func (a *App) disconnect() {
 		a.wake.Release()
 		a.wake = nil
 	}
-	a.linkState.Set("Disconnected") //nolint:errcheck
+	fyne.Do(func() { a.linkState.Set("Disconnected") }) //nolint:errcheck
 	a.appendLog("Disconnected.")
 }
 
@@ -257,6 +265,11 @@ func (a *App) startAPRS() {
 		interval = 30 * time.Minute
 	}
 	sendOnConnect := a.cfg.APRS.SendOnConnect
+
+	log.Printf("aprs: beacon loop starting (send_on_connect=%v, interval=%v)", sendOnConnect, interval)
+	if !a.cfg.APRS.HasStaticPosition() {
+		log.Printf("aprs: WARNING — no static latitude/longitude in config; beacon will only work if a radio GPS fix is cached")
+	}
 
 	go func() {
 		if sendOnConnect {
@@ -298,7 +311,9 @@ func (a *App) stopAPRS() {
 // from the radio's GPS cache when available, falling back to the static
 // latitude/longitude in the config.
 func (a *App) sendBeacon() {
+	log.Printf("aprs: sendBeacon called")
 	if a.rt == nil {
+		log.Printf("aprs: sendBeacon aborted — no router")
 		return
 	}
 
@@ -306,11 +321,14 @@ func (a *App) sendBeacon() {
 	var pos aprs.Position
 	if p, _, ok := a.rt.GPS().Get(); ok {
 		pos = p
+		log.Printf("aprs: using GPS fix from radio: %.5f, %.5f", pos.Lat, pos.Lon)
 		a.appendLog("APRS: using GPS fix from radio.")
-	} else if a.cfg.APRS.Latitude != 0 || a.cfg.APRS.Longitude != 0 {
+	} else if a.cfg.APRS.HasStaticPosition() {
 		pos = aprs.Position{Lat: a.cfg.APRS.Latitude, Lon: a.cfg.APRS.Longitude}
+		log.Printf("aprs: using static position from config: %.5f, %.5f", pos.Lat, pos.Lon)
 		a.appendLog("APRS: using static position from config.")
 	} else {
+		log.Printf("aprs: no position available (no radio GPS fix, no static lat/lon in config)")
 		a.appendLog("APRS: no position available — set latitude/longitude in config or transmit to cache a GPS fix.")
 		return
 	}
@@ -325,24 +343,30 @@ func (a *App) sendBeacon() {
 		symChar = a.cfg.APRS.Symbol[0]
 	}
 	tnc2 := aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment)
+	log.Printf("aprs: TNC2 packet: %s", tnc2)
 	sentence := aprs.WrapDPRS(tnc2)
 	hdr, err := a.rt.SendBeacon(sentence)
 	if err != nil {
+		log.Printf("aprs: beacon send to reflector failed: %v", err)
 		a.appendLog("APRS beacon failed: " + err.Error())
 		return
 	}
+	log.Printf("aprs: beacon sent to reflector OK")
 	// Announce the beacon header to ircDDB so it appears in routing tables
 	// and Last Heard pages.
 	if a.irc != nil {
 		a.irc.AnnounceUser(hdr)
+		log.Printf("aprs: ircDDB AnnounceUser sent")
 	}
 	// Forward the position report to APRS-IS so it appears on aprs.fi.
 	if a.aprsIS == nil {
 		a.aprsIS = aprs.NewAPRSISClient(call, "RefConnect", "0.7.0")
 	}
 	if err := a.aprsIS.Send(tnc2); err != nil {
+		log.Printf("aprs: APRS-IS send failed: %v", err)
 		a.appendLog("APRS-IS: " + err.Error())
 	} else {
+		log.Printf("aprs: APRS-IS send OK")
 		a.appendLog("APRS-IS: position forwarded.")
 	}
 	a.appendLog(fmt.Sprintf("APRS beacon sent (%.5f, %.5f).", pos.Lat, pos.Lon))
@@ -418,7 +442,7 @@ func (a *App) startRouter() {
 			}
 			if evt.Header != nil {
 				who := evt.Header.MyCall
-				a.lastHeard.Set(who) //nolint:errcheck
+				fyne.Do(func() { a.lastHeard.Set(who) }) //nolint:errcheck
 				dir := "RX"
 				if evt.Direction == router.DirTX {
 					dir = "TX"
@@ -428,16 +452,16 @@ func (a *App) startRouter() {
 				}
 				a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))
 				if evt.Direction == router.DirRX {
-					a.rxActive.Set(true) //nolint:errcheck
+					fyne.Do(func() { a.rxActive.Set(true) }) //nolint:errcheck
 				} else {
-					a.txActive.Set(true) //nolint:errcheck
+					fyne.Do(func() { a.txActive.Set(true) }) //nolint:errcheck
 				}
 			}
 			if evt.Frame != nil && evt.Frame.End {
 				if evt.Direction == router.DirRX {
-					a.rxActive.Set(false) //nolint:errcheck
+					fyne.Do(func() { a.rxActive.Set(false) }) //nolint:errcheck
 				} else {
-					a.txActive.Set(false) //nolint:errcheck
+					fyne.Do(func() { a.txActive.Set(false) }) //nolint:errcheck
 				}
 			}
 		}

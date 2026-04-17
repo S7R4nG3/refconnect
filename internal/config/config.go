@@ -39,6 +39,12 @@ type APRSConfig struct {
 	Longitude            float64 `yaml:"longitude"`     // static fallback longitude (decimal degrees, + = E)
 }
 
+// HasStaticPosition returns true if the user has configured a non-zero
+// static latitude/longitude fallback position.
+func (c APRSConfig) HasStaticPosition() bool {
+	return c.Latitude != 0 || c.Longitude != 0
+}
+
 // RadioConfig holds serial port settings for the connected radio.
 type RadioConfig struct {
 	Port     string `yaml:"port"`

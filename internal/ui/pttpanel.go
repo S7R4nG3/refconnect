@@ -26,9 +26,8 @@ func refreshPorts(portSelect *widget.Select, cfg *config.Config) {
 	if len(ports) == 0 {
 		ports = []string{"(no ports found)"}
 	}
-	portSelect.Options = ports
 
-	// Try to keep the current selection; fall back to config, then first port.
+	// Determine the best selection before touching any widgets.
 	current := portSelect.Selected
 	best := ""
 	for _, p := range ports {
@@ -43,11 +42,16 @@ func refreshPorts(portSelect *widget.Select, cfg *config.Config) {
 	if best == "" && len(ports) > 0 && ports[0] != "(no ports found)" {
 		best = ports[0]
 	}
-	if best != "" {
-		portSelect.SetSelected(best)
-		cfg.Radio.Port = best
-	}
-	portSelect.Refresh()
+
+	// All widget mutations must go through fyne.Do when called from a goroutine.
+	fyne.Do(func() {
+		portSelect.Options = ports
+		if best != "" {
+			portSelect.SetSelected(best)
+			cfg.Radio.Port = best
+		}
+		portSelect.Refresh()
+	})
 }
 
 // buildPTTPanel returns the serial port and protocol selectors.
