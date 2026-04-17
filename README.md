@@ -1,3 +1,9 @@
+![Latest Version](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FS7R4nG3%2Frefconnect%2Frefs%2Fheads%2Fmain%2Fversion.json&query=version)
+
+[![Dependabot Updates](https://github.com/S7R4nG3/refconnect/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/S7R4nG3/refconnect/actions/workflows/dependabot/dependabot-updates)
+
+[![Build Status](https://github.com/S7R4nG3/refconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/S7R4nG3/refconnect/actions/workflows/ci.yml)
+
 # RefConnect
 
 A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STAR radio to internet-based reflectors via serial port. Supports DExtra (XRF), DPlus (REF), and XLX reflector protocols.
