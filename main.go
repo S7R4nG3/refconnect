@@ -30,14 +30,13 @@ func main() {
 	// Falls back to stderr on any error so logging is never silently lost.
 	if logDir, err := config.LogDir(); err == nil {
 		if err := os.MkdirAll(logDir, 0o755); err == nil {
+			// Prune leftover empty log files before creating a new one.
+			pruneEmptyLogs(logDir)
 			name := time.Now().Format("2006-01-02_15-04-05") + ".log"
 			if f, err := os.OpenFile(logDir+"/"+name, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
 				defer f.Close()
 				log.SetOutput(f)
 			}
-			// Prune empty log files in the background — reading the
-			// directory can be slow on Windows with many files.
-			go pruneEmptyLogs(logDir)
 		}
 	}
 

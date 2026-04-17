@@ -51,7 +51,6 @@ clean:
 
 test: build
 	@rm -f ./refconnect.log
-	@rm -f $${HOME}/.config/refconnect/Logs/*.log
 	@./$(BINARY)
 	@mv $${HOME}/.config/refconnect/Logs/*.log ./refconnect.log
 
