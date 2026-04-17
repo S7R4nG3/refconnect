@@ -1,5 +1,7 @@
+---
 commitizen:
-  version: 0.6.1
-  tag_format: "v$major.$minor.$patch"
+  name: cz_conventional_commits
+  tag_format: v$version
+  version: 0.7.0
   version_files:
-    - version.json
+  - version.json
