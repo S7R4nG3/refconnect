@@ -1,5 +1,5 @@
 // Package protocol defines the Reflector interface implemented by each
-// D-STAR reflector protocol (DExtra, DPlus, XLX).
+// D-STAR reflector protocol (DExtra, DPlus, XLX, DCS).
 package protocol
 
 import "github.com/S7R4nG3/refconnect/internal/dstar"
@@ -11,6 +11,7 @@ const (
 	ProtoDExtra Protocol = "DExtra"
 	ProtoDPlus  Protocol = "DPlus"
 	ProtoXLX    Protocol = "XLX"
+	ProtoDCS    Protocol = "DCS"
 )
 
 // Config holds the parameters needed to connect to a reflector.

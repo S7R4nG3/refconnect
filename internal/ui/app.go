@@ -16,6 +16,7 @@ import (
 	"github.com/S7R4nG3/refconnect/internal/config"
 	"github.com/S7R4nG3/refconnect/internal/ircddb"
 	"github.com/S7R4nG3/refconnect/internal/protocol"
+	"github.com/S7R4nG3/refconnect/internal/protocol/dcs"
 	"github.com/S7R4nG3/refconnect/internal/protocol/dextra"
 	"github.com/S7R4nG3/refconnect/internal/protocol/dplus"
 	"github.com/S7R4nG3/refconnect/internal/protocol/xlx"
@@ -133,6 +134,8 @@ func (a *App) connect(entry config.ReflectorEntry) {
 		ref = dplus.New()
 	case protocol.ProtoXLX:
 		ref = xlx.New()
+	case protocol.ProtoDCS:
+		ref = dcs.New()
 	default:
 		a.appendLog("Unknown protocol: " + entry.Protocol)
 		return
