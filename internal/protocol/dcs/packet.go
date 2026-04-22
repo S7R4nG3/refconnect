@@ -70,6 +70,13 @@ const (
 // voiceTag is the 4-byte ASCII prefix on DCS voice/data packets.
 var voiceTag = [voiceTagLen]byte{'0', '0', '0', '1'}
 
+// connectHTML is the HTML info string placed in the connect packet at bytes
+// 19-518. The original DCS reflector servers (xreflector.net) expect this
+// field to contain HTML matching the ircDDBGateway format; plain text or
+// unexpected content causes the server to not register the client.
+// const connectHTML = `<table border="0" width="95%"><tr><td width="96%"><img src=https://github.com/S7R4nG3/refconnect/raw/main/docs/antenna.png></td><td width="96%"><font size="2"><a href="https://github.com/S7R4nG3/refconnect"><b>RefConnect</b></a> - a DStar Client</font></td></tr></table>`
+const connectHTML = `<table><tr><td width="96%"><font size="2"><a href="https://github.com/S7R4nG3/refconnect"><b>RefConnect</b></a> - a DStar Client</font></td></tr></table>`
+
 // buildConnectPacket builds the 519-byte DCS link request.
 // Bytes 0-6 are the callsign base (7 chars), byte 7 is the local module
 // letter (same as DExtra), and byte 8 repeats the local module letter.
@@ -82,7 +89,8 @@ func buildConnectPacket(callsign string, localModule, targetModule byte, reflect
 	pkt[9] = targetModule
 	pkt[10] = 0x00
 	copy(pkt[11:19], dstar.PadCallsign(reflectorCall, 8))
-	// Bytes 19-518: HTML info string (optional, server ignores it).
+	// Bytes 19-518: HTML info string matching the ircDDBGateway format.
+	copy(pkt[19:], connectHTML)
 	return pkt
 }
 
