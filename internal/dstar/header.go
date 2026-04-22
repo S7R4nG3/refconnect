@@ -45,8 +45,18 @@ func DecodeHeader(raw [HeaderBytes]byte) (DVHeader, error) {
 	if crc != stored {
 		return DVHeader{}, fmt.Errorf("dstar: header CRC mismatch (got %04X, want %04X)", stored, crc)
 	}
+	return decodeHeaderFields(raw), nil
+}
 
-	h := DVHeader{
+// DecodeHeaderNoCRC parses a 41-byte wire header without validating the CRC.
+// Used by protocols like DCS where the reflector may regenerate headers with
+// a different CRC algorithm.
+func DecodeHeaderNoCRC(raw [HeaderBytes]byte) DVHeader {
+	return decodeHeaderFields(raw)
+}
+
+func decodeHeaderFields(raw [HeaderBytes]byte) DVHeader {
+	return DVHeader{
 		Flag1:        raw[0],
 		Flag2:        raw[1],
 		Flag3:        raw[2],
@@ -56,5 +66,4 @@ func DecodeHeader(raw [HeaderBytes]byte) (DVHeader, error) {
 		MyCall:       string(raw[27:35]),
 		MyCallSuffix: string(raw[35:39]),
 	}
-	return h, nil
 }

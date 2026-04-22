@@ -1,27 +1,38 @@
 package dcs
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
 
 func TestBuildConnectPacket(t *testing.T) {
-	pkt := buildConnectPacket("KR4GCQ D", 'D', 'C')
+	pkt := buildConnectPacket("KR4GCQ D", 'D', 'C', "DCS001  ")
 	if len(pkt) != connectPacketLen {
 		t.Fatalf("connect packet length = %d, want %d", len(pkt), connectPacketLen)
 	}
-	if string(pkt[0:8]) != "KR4GCQ D" {
-		t.Errorf("callsign = %q, want %q", string(pkt[0:8]), "KR4GCQ D")
+	// Bytes 0-6: callsign base, byte 7: local module letter.
+	if string(pkt[0:7]) != "KR4GCQ " {
+		t.Errorf("callsign base = %q, want %q", string(pkt[0:7]), "KR4GCQ ")
+	}
+	if pkt[7] != 'D' {
+		t.Errorf("byte[7] module = %c, want D", pkt[7])
 	}
 	if pkt[8] != 'D' {
-		t.Errorf("local module = %c, want D", pkt[8])
+		t.Errorf("byte[8] module repeat = %c, want D", pkt[8])
 	}
 	if pkt[9] != 'C' {
 		t.Errorf("target module = %c, want C", pkt[9])
 	}
-	// Rest should be zeros.
-	for i := 10; i < connectPacketLen; i++ {
+	if pkt[10] != 0x00 {
+		t.Errorf("byte[10] = 0x%02X, want 0x00", pkt[10])
+	}
+	if string(pkt[11:19]) != "DCS001  " {
+		t.Errorf("reflector callsign = %q, want %q", string(pkt[11:19]), "DCS001  ")
+	}
+	// Bytes 19-518 should be zeros (HTML info, left empty).
+	for i := 19; i < connectPacketLen; i++ {
 		if pkt[i] != 0 {
 			t.Errorf("byte[%d] = 0x%02X, want 0x00", i, pkt[i])
 			break
@@ -46,24 +57,28 @@ func TestBuildDisconnectPacket(t *testing.T) {
 }
 
 func TestBuildKeepalive(t *testing.T) {
-	pkt := buildKeepalive("KR4GCQ D", 'D', "DCS001  ", 'C')
+	pkt := buildKeepalive("KR4GCQ D", 'A', "DCS001  ", 'C')
 	if len(pkt) != keepalivePacketLen {
 		t.Fatalf("keepalive length = %d, want %d", len(pkt), keepalivePacketLen)
 	}
-	if string(pkt[0:7]) != "KR4GCQ " {
-		t.Errorf("client callsign = %q, want %q", string(pkt[0:7]), "KR4GCQ ")
+	if string(pkt[0:7]) != "DCS001 " {
+		t.Errorf("reflector callsign = %q, want %q", string(pkt[0:7]), "DCS001 ")
 	}
-	if pkt[7] != 'D' {
-		t.Errorf("client module = %c, want D", pkt[7])
+	if pkt[7] != 'C' {
+		t.Errorf("reflector module = %c, want C", pkt[7])
 	}
-	if pkt[8] != 0x00 {
-		t.Errorf("separator = 0x%02X, want 0x00", pkt[8])
+	if pkt[8] != ' ' {
+		t.Errorf("separator = 0x%02X, want 0x20 (space)", pkt[8])
 	}
-	if string(pkt[9:16]) != "DCS001 " {
-		t.Errorf("reflector callsign = %q, want %q", string(pkt[9:16]), "DCS001 ")
+	if string(pkt[9:16]) != "KR4GCQ " {
+		t.Errorf("client callsign = %q, want %q", string(pkt[9:16]), "KR4GCQ ")
 	}
-	if pkt[16] != 'C' {
-		t.Errorf("reflector module = %c, want C", pkt[16])
+	if pkt[16] != 'A' || pkt[17] != 'A' {
+		t.Errorf("client module bytes = %c %c, want A A", pkt[16], pkt[17])
+	}
+	if pkt[18] != 0x0A || pkt[19] != 0x00 || pkt[20] != 0x20 || pkt[21] != 0x20 {
+		t.Errorf("trailing tag = %02X %02X %02X %02X, want 0A 00 20 20",
+			pkt[18], pkt[19], pkt[20], pkt[21])
 	}
 }
 
@@ -85,7 +100,7 @@ func TestVoicePacketRoundTrip(t *testing.T) {
 		End:      false,
 	}
 
-	pkt, err := encodeVoicePacket(0x1234, 5, false, hdr, frm)
+	pkt, err := encodeVoicePacket(0x1234, 5, false, hdr, frm, 42)
 	if err != nil {
 		t.Fatalf("encodeVoicePacket: %v", err)
 	}
@@ -96,17 +111,43 @@ func TestVoicePacketRoundTrip(t *testing.T) {
 	if string(pkt[0:4]) != "0001" {
 		t.Errorf("tag = %q, want %q", string(pkt[0:4]), "0001")
 	}
+	// Header is 39 bytes at [4:43], no CRC.
+	// Stream ID at bytes 43-44.
+	gotSID := binary.LittleEndian.Uint16(pkt[43:45])
+	if gotSID != 0x1234 {
+		t.Errorf("stream ID = 0x%04X, want 0x1234", gotSID)
+	}
+	// Seq at byte 45.
+	if pkt[45] != 5 {
+		t.Errorf("seq byte = %d, want 5", pkt[45])
+	}
+	// AMBE at bytes 46-54.
+	if pkt[46] != 0x9E || pkt[54] != 0xE8 {
+		t.Errorf("AMBE not at expected offset 46-54")
+	}
+	// Slow data at bytes 55-57.
+	if pkt[55] != 0x55 || pkt[56] != 0x2D || pkt[57] != 0x16 {
+		t.Errorf("SlowData not at expected offset 55-57")
+	}
+	// TX sequence counter at bytes 58-60.
+	if pkt[58] != 42 {
+		t.Errorf("txSeq low = %d, want 42", pkt[58])
+	}
+	// Filler at byte 61.
+	if pkt[61] != 0x01 {
+		t.Errorf("filler = 0x%02X, want 0x01", pkt[61])
+	}
 
 	// Parse it back.
-	gotHdr, gotFrm, gotSID, err := parsePacket(pkt)
+	gotHdr, gotFrm, parsedSID, err := parsePacket(pkt)
 	if err != nil {
 		t.Fatalf("parsePacket: %v", err)
 	}
 	if gotHdr == nil || gotFrm == nil {
 		t.Fatal("parsePacket returned nil header or frame")
 	}
-	if gotSID != 0x1234 {
-		t.Errorf("stream ID = 0x%04X, want 0x1234", gotSID)
+	if parsedSID != 0x1234 {
+		t.Errorf("parsed stream ID = 0x%04X, want 0x1234", parsedSID)
 	}
 	if gotHdr.MyCall != hdr.MyCall {
 		t.Errorf("MyCall = %q, want %q", gotHdr.MyCall, hdr.MyCall)
@@ -142,7 +183,7 @@ func TestVoicePacketEndFlag(t *testing.T) {
 		End:  true,
 	}
 
-	pkt, err := encodeVoicePacket(0xABCD, 20, true, hdr, frm)
+	pkt, err := encodeVoicePacket(0xABCD, 20, true, hdr, frm, 0)
 	if err != nil {
 		t.Fatalf("encodeVoicePacket: %v", err)
 	}
@@ -160,7 +201,6 @@ func TestVoicePacketEndFlag(t *testing.T) {
 }
 
 func TestParsePacketIgnoresShort(t *testing.T) {
-	// Keepalive-length packets should be silently ignored.
 	hdr, frm, sid, err := parsePacket(make([]byte, 17))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

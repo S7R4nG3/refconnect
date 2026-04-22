@@ -11,7 +11,7 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 ## Features
 
 - Multi-OS Support! (Linux/MacOS/Windows)
-- Connect to REF/XRF/XLX reflectors via DPlus/DExtra/XLX protocols
+- Connect to REF/XRF/XLX/DCS reflectors via DPlus/DExtra/XLX protocols
 - Supports ICOM (DV Gateway Terminal) and Kenwood (MMDVM) radio protocols
 - Serial port integration with D-STAR radios via USB
 - Saved reflector profiles with last-used memory

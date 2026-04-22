@@ -36,9 +36,11 @@ type Client struct {
 	wg     sync.WaitGroup // tracks rxLoop + keepaliveLoop
 
 	// TX state: DCS embeds the full header in every voice packet, so we
-	// cache the current TX header and stream ID.
+	// cache the current TX header and stream ID. txSeq is an absolute
+	// packet counter placed at bytes 58-60 of each outgoing voice packet.
 	streamID uint16
 	txHeader dstar.DVHeader
+	txSeq    uint32
 
 	// RX dedup: each voice packet carries a header, but we only forward
 	// the first header per stream to avoid resetting the radio's decoder.
@@ -93,6 +95,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	c.cfg = cfg
 	c.stopCh = make(chan struct{})
 	c.streamID = nextStreamID()
+	c.txSeq = 0
 	c.setState(protocol.StateConnecting, fmt.Sprintf("Connecting to %s:%d module %c", cfg.Host, cfg.Port, cfg.Module))
 
 	fail := func(msg string, err error) error {
@@ -109,12 +112,10 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	// Determine the local module from the callsign suffix.
 	cs := dstar.PadCallsign(cfg.MyCall, 8)
 	localModule := cs[7]
-	if localModule == ' ' {
-		localModule = 'A'
-	}
 
-	pkt := buildConnectPacket(cfg.MyCall, localModule, cfg.Module)
-	log.Printf("dcs: sending connect packet (%d bytes) to %s:%d", len(pkt), cfg.Host, cfg.Port)
+	pkt := buildConnectPacket(cfg.MyCall, localModule, cfg.Module, c.reflectorCall)
+	log.Printf("dcs: sending connect packet (%d bytes) to %s:%d\n%s",
+		len(pkt), cfg.Host, cfg.Port, hex.Dump(pkt[:min(len(pkt), 32)]))
 	if _, err := conn.WriteToUDP(pkt, addr); err != nil {
 		return fail("send connect: "+err.Error(), err)
 	}
@@ -129,13 +130,20 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 	log.Printf("dcs: received %d bytes from %s:\n%s", n, fromAddr, hex.Dump(buf[:min(n, 64)]))
 
-	// DCS servers echo the connect packet back with the same length (519 bytes)
-	// on success. A shorter or different response indicates rejection.
-	// Be permissive: accept any response >= 100 bytes as an ACK, since
-	// different DCS server implementations may vary.
-	if n < 100 {
+	// DCS servers respond to a successful connect with a 22-byte ACK that
+	// looks like a keepalive: reflectorCall(7) + module(1) + space(1) +
+	// clientCall(7) + clientModule(2) + tag{0x0A,0x00,0x20,0x20}.
+	// Verify the response contains our callsign to confirm the link.
+	if n < 22 {
 		return fail(
 			fmt.Sprintf("connect rejected by reflector (got %d bytes)", n),
+			fmt.Errorf("dcs: connect rejected"),
+		)
+	}
+	// Sanity check: the trailing tag bytes should be {0x0A, 0x00, 0x20, 0x20}.
+	if n >= 22 && buf[n-4] != 0x0A {
+		return fail(
+			fmt.Sprintf("connect rejected by reflector (unexpected response: %d bytes)", n),
 			fmt.Errorf("dcs: connect rejected"),
 		)
 	}
@@ -180,6 +188,7 @@ func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	}
 	c.streamID = nextStreamID()
 	c.txHeader = hdr
+	c.txSeq = 0
 	log.Printf("dcs: SendHeader streamID=%04X MYCALL=%q URCALL=%q",
 		c.streamID, hdr.MyCall, hdr.YourCall)
 	return nil
@@ -188,14 +197,18 @@ func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 // SendFrame transmits a voice frame with the cached header embedded.
 func (c *Client) SendFrame(f dstar.DVFrame) error {
 	c.mu.Lock()
-	conn, addr, sid, hdr := c.conn, c.remoteAddr, c.streamID, c.txHeader
+	conn, addr, sid, hdr, seq := c.conn, c.remoteAddr, c.streamID, c.txHeader, c.txSeq
+	c.txSeq++
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dcs: not connected")
 	}
-	pkt, err := encodeVoicePacket(sid, f.Seq, f.End, hdr, f)
+	pkt, err := encodeVoicePacket(sid, f.Seq, f.End, hdr, f, seq)
 	if err != nil {
 		return err
+	}
+	if f.Seq == 0 {
+		log.Printf("dcs: TX voice packet #0 (%d bytes):\n%s", len(pkt), hex.Dump(pkt[:min(len(pkt), 64)]))
 	}
 	_, err = conn.WriteToUDP(pkt, addr)
 	return err
@@ -227,21 +240,32 @@ func (c *Client) rxLoop() {
 			return
 		}
 
+		// Debug: hex dump voice-sized packets to diagnose header offset.
+		if n >= 60 && buf[0] == '0' && buf[1] == '0' && buf[2] == '0' && buf[3] == '1' {
+			log.Printf("dcs: RX voice packet (%d bytes):\n%s", n, hex.Dump(buf[:min(n, 100)]))
+		}
+
 		hdr, frm, sid, err := parsePacket(buf[:n])
 		if err != nil {
 			log.Printf("dcs: parse error: %v", err)
 			continue
 		}
+		if hdr == nil && frm == nil {
+			log.Printf("dcs: RX control/keepalive (%d bytes):\n%s", n, hex.Dump(buf[:n]))
+		}
 
 		// Voice packet: both hdr and frm are non-nil.
 		if hdr != nil {
 			// Deduplicate: only forward the first header per stream.
+			// DCS has no stream ID, so we track by MYCALL. A new header
+			// is forwarded when the source callsign changes or after an
+			// end-of-stream was received.
 			c.mu.Lock()
 			dup := c.rxStreamActive && sid == c.rxStreamID
 			if !dup {
 				c.rxStreamID = sid
 				c.rxStreamActive = true
-				log.Printf("dcs: new RX stream %04X — forwarding header", sid)
+				log.Printf("dcs: new RX stream %04X from %s — forwarding header", sid, strings.TrimSpace(hdr.MyCall))
 			}
 			c.mu.Unlock()
 			if !dup {
@@ -288,11 +312,12 @@ func (c *Client) keepaliveLoop() {
 			}
 			cs := dstar.PadCallsign(callsign, 8)
 			clientMod := cs[7]
-			if clientMod == ' ' {
-				clientMod = 'A'
-			}
 			pkt := buildKeepalive(callsign, clientMod, refCall, refMod)
-			conn.WriteToUDP(pkt, c.remoteAddr) //nolint:errcheck
+			if _, err := conn.WriteToUDP(pkt, c.remoteAddr); err != nil {
+				log.Printf("dcs: keepalive send error: %v", err)
+			} else {
+				log.Printf("dcs: keepalive sent (%d bytes)", len(pkt))
+			}
 		}
 	}
 }

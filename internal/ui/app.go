@@ -248,7 +248,11 @@ func (a *App) disconnect() {
 		a.wake.Release()
 		a.wake = nil
 	}
-	fyne.Do(func() { a.linkState.Set("Disconnected") }) //nolint:errcheck
+	fyne.Do(func() {
+		a.linkState.Set("Disconnected") //nolint:errcheck
+		a.rxActive.Set(false)           //nolint:errcheck
+		a.txActive.Set(false)           //nolint:errcheck
+	})
 	a.appendLog("Disconnected.")
 }
 
