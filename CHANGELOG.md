@@ -1,3 +1,14 @@
+## v0.8.0 (2026-04-22)
+
+### Feat
+
+- **internal/protocol/dcs**: init support for dcs reflectors
+
+### Fix
+
+- **internal/protocol/dcs**: updated the DCS protocol for full functionality - might need some optimizations later
+- **internal/protocol/dcs**: dcs client is now functioning - making a few cosmetic tweaks before release
+
 ## v0.7.3 (2026-04-17)
 
 ### Fix
