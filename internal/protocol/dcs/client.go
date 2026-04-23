@@ -109,9 +109,10 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	c.reflectorCall = deriveReflectorCall(cfg.Host)
 	c.reflectorModule = cfg.Module
 
-	// Determine the local module from the callsign suffix.
-	cs := dstar.PadCallsign(cfg.MyCall, 8)
-	localModule := cs[7]
+	// DCS protocol module is hardcoded to 'G' so the reflector classifies
+	// the client as "Dongle" on the status page. The user's callsign suffix
+	// (which may be a space) is preserved in D-STAR radio headers.
+	localModule := byte('G')
 
 	pkt := buildConnectPacket(cfg.MyCall, localModule, cfg.Module, c.reflectorCall)
 	log.Printf("dcs: sending connect packet (%d bytes) to %s:%d\n%s",
@@ -310,9 +311,7 @@ func (c *Client) keepaliveLoop() {
 			if conn == nil {
 				return
 			}
-			cs := dstar.PadCallsign(callsign, 8)
-			clientMod := cs[7]
-			pkt := buildKeepalive(callsign, clientMod, refCall, refMod)
+			pkt := buildKeepalive(callsign, 'G', refCall, refMod)
 			if _, err := conn.WriteToUDP(pkt, c.remoteAddr); err != nil {
 				log.Printf("dcs: keepalive send error: %v", err)
 			} else {

@@ -28,7 +28,7 @@ const (
 	gatewayChan      = "#dstar"
 	pingInterval     = 60 * time.Second
 	reconnectDelay   = 15 * time.Second
-	nickInUseDelay   = 90 * time.Second // wait for server to expire ghost nick
+	nickInUseDelay   = 30 * time.Second // wait for server to expire ghost nick
 	dialTimeout      = 10 * time.Second
 )
 
@@ -194,9 +194,15 @@ func (c *Client) setState(s State, msg string) {
 
 // loop connects, runs a session, and reconnects on failure until Stop is called.
 func (c *Client) loop() {
+	// Capture stopCh locally so Stop() setting c.stopCh = nil can't turn
+	// our select cases into nil-channel receives that block forever.
+	c.stopMu.Lock()
+	stop := c.stopCh
+	c.stopMu.Unlock()
+
 	for {
 		select {
-		case <-c.stopCh:
+		case <-stop:
 			return
 		default:
 		}
@@ -207,7 +213,7 @@ func (c *Client) loop() {
 		if err != nil {
 			c.setState(StateError, err.Error())
 			select {
-			case <-c.stopCh:
+			case <-stop:
 				return
 			case <-time.After(reconnectDelay):
 			}
@@ -215,7 +221,7 @@ func (c *Client) loop() {
 		}
 
 		delay := reconnectDelay
-		if err := c.session(conn); err != nil {
+		if err := c.session(conn, stop); err != nil {
 			log.Printf("ircddb: session ended: %v", err)
 			if err == errNickInUse {
 				c.setState(StateConnecting, fmt.Sprintf("ircDDB nick in use — retrying in %s…", nickInUseDelay))
@@ -228,7 +234,7 @@ func (c *Client) loop() {
 		}
 
 		select {
-		case <-c.stopCh:
+		case <-stop:
 			return
 		case <-time.After(delay):
 		}
@@ -236,7 +242,7 @@ func (c *Client) loop() {
 }
 
 // session runs one IRC session until the connection closes or Stop is called.
-func (c *Client) session(conn net.Conn) error {
+func (c *Client) session(conn net.Conn, stop <-chan struct{}) error {
 	defer conn.Close()
 
 	send := func(line string) error {
@@ -280,7 +286,7 @@ func (c *Client) session(conn net.Conn) error {
 
 	for {
 		select {
-		case <-c.stopCh:
+		case <-stop:
 			send("QUIT :shutdown") //nolint:errcheck
 			return nil
 

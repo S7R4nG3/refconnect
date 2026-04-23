@@ -1,6 +1,6 @@
 version: 1
 callsign: N0CALL
-callsign_suffix: G
+callsign_suffix: " "
 radio:
     port: /dev/cu.usbmodem1203
     protocol: DV-GW

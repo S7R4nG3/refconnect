@@ -31,13 +31,8 @@ func TestBuildConnectPacket(t *testing.T) {
 	if string(pkt[11:19]) != "DCS001  " {
 		t.Errorf("reflector callsign = %q, want %q", string(pkt[11:19]), "DCS001  ")
 	}
-	// HTML info should appear at bytes 19 onward.
-	got := string(pkt[19 : 19+len(connectHTML)])
-	if got != connectHTML {
-		t.Errorf("connect HTML = %q, want %q", got, connectHTML)
-	}
-	// Rest of the info field should be zeros.
-	for i := 19 + len(connectHTML); i < connectPacketLen; i++ {
+	// Bytes 19-518 should be zeros (HTML info field, left empty).
+	for i := 19; i < connectPacketLen; i++ {
 		if pkt[i] != 0 {
 			t.Errorf("byte[%d] = 0x%02X, want 0x00", i, pkt[i])
 			break
