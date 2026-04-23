@@ -1,3 +1,9 @@
+## v0.8.1 (2026-04-23)
+
+### Fix
+
+- **PROTOCOL.md**: updated protocol documentation and added code optimizations
+
 ## v0.8.0 (2026-04-22)
 
 ### Feat
