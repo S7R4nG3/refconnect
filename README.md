@@ -2,7 +2,7 @@
 
 # RefConnect
 
-A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STAR radio to internet-based reflectors via serial port. Supports DExtra (XRF), DPlus (REF), and XLX reflector protocols.
+A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STAR radio to internet-based reflectors via serial port. Supports DExtra (XRF), DPlus (REF), XLX, and DCS reflector protocols.
 
 ![RefConnect Screenshot](docs/screenshot.png)
 
