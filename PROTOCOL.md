@@ -328,21 +328,189 @@ This registers the callsign in the ircDDB routing table and makes it appear as "
 
 ## 6. DExtra Protocol (XRF Reflectors)
 
-XRF reflectors use the DExtra protocol. Implementation is in `internal/protocol/dextra/`. The framing is similar to DPlus but uses a different handshake and packet structure. (Detail to be expanded as testing is performed.)
+DExtra is used by XRF reflectors (e.g. `xrf001.openquad.net`). Transport: **UDP port 30001**.
+
+### 6.1 Connection Handshake
+
+**Connect packet (client → server, 11 bytes):**
+```
+[0-6]  callsign base, space-padded to 7 bytes
+[7]    local module letter (8th character of MyCall)
+[8]    local module letter (copy of [7])
+[9]    target reflector module letter (A-Z)
+[10]   0x00
+```
+
+**ACK (server → client, 14 or 15 bytes):** Server echoes 10 or 11 bytes of the connect packet then appends `"ACK\0"`. Most XRF servers echo 10 bytes (dropping the trailing `0x00`), giving 14 bytes total with "ACK" at offset 10. Some echo all 11 bytes, giving 15 bytes with "ACK" at offset 11. Accept either.
+
+**Disconnect (11 bytes):** Same layout as connect but byte[9] = `' '` (0x20).
+
+**Keepalive (9 bytes):** Callsign space-padded to 8 bytes + `0x00`. Sent every 5 seconds in both directions.
+
+### 6.2 DSVT Data Packets
+
+Modern XRF reflectors (openquad.net, etc.) run xlxd, which expects DSVT framing with a 12-byte fixed tag:
+
+```
+[D][S][V][T][type][0x00][0x00][0x00][0x20][0x00][0x01][0x01]
+```
+
+**Header packet (56 bytes):**
+```
+[12-byte tag (type=0x10)][streamID(2, LE)][0x80][41-byte D-STAR header]
+```
+
+**Voice packet (27 bytes):**
+```
+[12-byte tag (type=0x20)][streamID(2, LE)][seq][AMBE(9)][SlowData(3)]
+```
+
+Stream ID is 2 bytes, little-endian. `seq` uses the standard convention: lower 6 bits = D-STAR sequence 0–20, bit 0x40 set on last frame.
 
 ---
 
 ## 7. XLX Protocol
 
-XLX reflectors are multi-protocol. The XLX client in `internal/protocol/xlx/` implements the relevant subset. (Detail to be expanded as testing is performed.)
+XLX reflectors use their own control protocol (per LX3JL xlxd `cxlxprotocol.cpp`) with DExtra-style DSVT voice framing. Transport: **UDP port 10002**.
+
+### 7.1 Connection Handshake
+
+**Connect packet (client → server, 39 bytes):**
+```
+[0]     'L'
+[1-8]   callsign (8 bytes, space-padded)
+[9]     VERSION_MAJOR
+[10]    VERSION_MINOR
+[11]    VERSION_REVISION
+[12-37] modules string (null-terminated, e.g. "A\0"), padded to fill
+[38]    0x00 (validity marker)
+```
+
+**ACK (server → client, 39 bytes):** Same layout but byte[0] = `'A'`.
+
+**NACK (server → client, 10 bytes):** `'N'` + callsign(8) + `0x00`.
+
+**Disconnect (10 bytes):** `'U'` + callsign(8) + `0x00`.
+
+**Keepalive (9 bytes):** callsign(8) + `0x00`. Sent every 5 seconds in both directions.
+
+### 7.2 DSVT Data Packets
+
+Voice data uses the same DSVT framing as DExtra (§6.2) but with a slightly different config byte at tag offset 11:
+
+```
+[D][S][V][T][type][0x00][0x00][0x00][0x20][0x00][0x01][0x02]
+                                                         ^^^^
+```
+
+Header packets are 56 bytes, voice packets are 27 bytes — layout identical to DExtra §6.2.
 
 ---
 
-## 8. MMDVM Protocol (Kenwood TH-D75)
+## 8. DCS Protocol (D-STAR Connected System)
+
+DCS is used by DCS reflectors (e.g. `dcs001.xreflector.net`). Transport: **UDP port 30051**.
+
+Unlike DPlus and DExtra, DCS embeds the full D-STAR header in **every** voice packet. There are no separate header-only or voice-only DSVT frames. The xlxd `CDcsProtocol` implementation is the reference.
+
+### 8.1 Connection Handshake
+
+**Connect packet (client → server, 519 bytes):**
+
+```
+[0-6]    callsign base (7 chars, space-padded)
+[7]      local module letter (e.g. 'G' for dongle)
+[8]      local module letter (repeated)
+[9]      target reflector module letter (A-Z)
+[10]     0x00 (null terminator)
+[11-18]  reflector callsign, space-padded to 8 bytes
+[19-518] HTML info string (500 bytes, ignored by server — left empty)
+```
+
+**Connect ACK (22 bytes):** A keepalive-format response confirming the link. Format: `reflectorCall(7) + refModule(1) + space(1) + clientCall(7) + clientModule(2) + tag{0x0A, 0x00, 0x20, 0x20}`. The trailing tag bytes `{0x0A, 0x00, 0x20, 0x20}` confirm a valid ACK.
+
+> **Note:** The local module is set to `'G'` so the reflector classifies the client as "Dongle" on the status page. The user's callsign suffix (which may be a space) is preserved in D-STAR radio headers.
+
+### 8.2 Disconnect
+
+**Disconnect packet (19 bytes):**
+
+```
+[0-7]   callsign, space-padded to 8 bytes
+[8]     module letter
+[9]     space (0x20)
+[10-18] zero padding
+```
+
+### 8.3 Keepalive
+
+**Keepalive packet (22 bytes):** Sent every 5 seconds.
+
+```
+[0-6]   reflector callsign (7 chars)
+[7]     reflector module letter
+[8]     space (0x20)
+[9-15]  client callsign (7 chars)
+[16]    client module letter
+[17]    client module letter (repeated)
+[18-21] tag {0x0A, 0x00, 0x20, 0x20}
+```
+
+The reflector callsign is derived from the hostname (e.g. `dcs001.xreflector.net` → `DCS001  `).
+
+### 8.4 Voice/Data Packet (100 bytes)
+
+Every DCS voice frame is a self-contained 100-byte packet carrying both the header and voice data:
+
+```
+[0-3]   tag "0001" (ASCII)
+[4-42]  39-byte D-STAR header (flags + callsigns, NO CRC)
+[43-44] stream ID (uint16, little-endian)
+[45]    packet sequence (0-20, bit 0x40 = last frame)
+[46-54] AMBE voice data (9 bytes)
+[55-57] slow data (3 bytes)
+[58-60] 3-byte absolute sequence counter (little-endian)
+[61]    0x01 filler byte
+[62-99] padding (zeros)
+```
+
+| Field | Size | Description |
+|-------|------|-------------|
+| Tag | 4 bytes | Always `"0001"` (ASCII `30 30 30 31`) |
+| Header | 39 bytes | Standard D-STAR header minus the 2-byte CRC — flags(3) + RPT2(8) + RPT1(8) + URCALL(8) + MYCALL(8) + MYCALL2(4) |
+| Stream ID | 2 bytes | Little-endian; new ID per transmission |
+| Sequence | 1 byte | D-STAR sequence 0–20 (lower 6 bits); bit 0x40 = end of transmission |
+| AMBE | 9 bytes | AMBE+2 compressed voice |
+| Slow Data | 3 bytes | Slow data bytes |
+| TX Counter | 3 bytes | Absolute packet counter (little-endian), monotonically incrementing across the transmission |
+| Filler | 1 byte | Always `0x01` |
+| Padding | 38 bytes | Zeros |
+
+**TX implementation note:** Because the header is embedded in every voice packet, the client pre-encodes the 41-byte D-STAR header once when `SendHeader` is called and caches the raw bytes. Each subsequent `SendFrame` copies the cached bytes into the packet without re-encoding.
+
+### 8.5 RX Stream Deduplication
+
+Since every voice packet carries a header, the client only forwards the **first** header per stream ID to avoid resetting the radio's voice decoder. Subsequent packets with the same stream ID have their headers silently discarded.
+
+### 8.6 Key Differences from DPlus/DExtra
+
+| Aspect | DPlus/DExtra | DCS |
+|--------|-------------|-----|
+| Port | 20001 / 30001 | 30051 |
+| Header transmission | Separate header packet | Header embedded in every voice packet |
+| Voice packet size | 29 / 27 bytes | 100 bytes |
+| Header CRC | Included (41 bytes) | Omitted (39 bytes) |
+| Connect packet size | 5–28 bytes | 519 bytes (includes HTML info field) |
+| DSVT framing | Yes (magic + type + config) | No (ASCII tag `"0001"` + inline header) |
+| TX counter | None | 3-byte absolute counter per packet |
+
+---
+
+## 9. MMDVM Protocol (Kenwood TH-D75)
 
 The TH-D75 implements an MMDVM-compatible modem interface, communicating over Bluetooth SPP (Serial Port Profile) or USB serial. Unlike the IC-705's proprietary DV Gateway Terminal protocol, the TH-D75 speaks the standard MMDVM serial protocol as defined by the g4klx/MMDVM firmware project. The canonical host-side reference implementation is g4klx/MMDVMHost; DroidStar (doug-h/DroidStar) is another client known to work with the TH-D75.
 
-### 8.1 Hardware Connection
+### 9.1 Hardware Connection
 
 ```
 TH-D75 ──► Bluetooth SPP ──► Host (virtual serial port)
@@ -356,7 +524,7 @@ TH-D75 ──► USB cable ──► Host USB (CDC-ACM virtual serial port)
 
 Only **one** CDC serial port (unlike the IC-705 which has two).
 
-**Serial parameters:** **115200 baud**, 8 data bits, no parity, 1 stop bit (8N1). Confirmed by BlueDV pcap CDC SET_LINE_CODING (`00 C2 01 00 00 00 08` = 115200, 1 stop, no parity, 8 bits).
+**Serial parameters:** **115200 baud**, 8 data bits, no parity, 1 stop bit (8N1). Confirmed by pcap CDC SET_LINE_CODING (`00 C2 01 00 00 00 08` = 115200, 1 stop, no parity, 8 bits).
 
 **Radio settings (TH-D75):**
 - Menu 650: **Reflector TERM Mode** — must be enabled
@@ -370,7 +538,7 @@ Only **one** CDC serial port (unlike the IC-705 which has two).
 
 No special init-flush sequence (unlike the IC-705's `FF FF FF`). Just open, wait, then start the handshake.
 
-### 8.2 Frame Structure
+### 9.2 Frame Structure
 
 Every MMDVM frame follows this envelope:
 
@@ -391,7 +559,7 @@ Maximum frame size: 255 bytes.
 
 When reading, scan for the `0xE0` start byte, discarding any garbage/noise bytes until found.
 
-### 8.3 Command Types
+### 9.3 Command Types
 
 | Constant | Value | Direction | Description |
 |----------|-------|-----------|-------------|
@@ -407,9 +575,9 @@ When reading, scan for the `0xE0` start byte, discarding any garbage/noise bytes
 | ACK | 0x70 | modem → host | Command accepted |
 | NAK | 0x7F | modem → host | Command rejected (payload[1] = reason code) |
 
-### 8.4 Handshake Sequence
+### 9.4 Handshake Sequence
 
-The handshake must complete before the modem will accept D-STAR data. The following sequence was captured from a BlueDV ↔ TH-D75 USB pcap (2026-04-14):
+The handshake must complete before the modem will accept D-STAR data. The following sequence was captured from a TH-D75 USB pcap (2026-04-14):
 
 ```
 1. Open port, set DTR/RTS high
@@ -423,7 +591,7 @@ The handshake must complete before the modem will accept D-STAR data. The follow
 9. Start GET_STATUS polling every 250ms
 ```
 
-> **Important:** SET_MODE(D-STAR) after SET_CONFIG is required. Without it, the TH-D75 will not process D-STAR data frames. BlueDV also sends SET_MODE(idle) after EOT to deactivate D-STAR mode.
+> **Important:** SET_MODE(D-STAR) after SET_CONFIG is required. Without it, the TH-D75 will not process D-STAR data frames. Also sends SET_MODE(idle) after EOT to deactivate D-STAR mode.
 
 #### GET_VERSION (3 bytes)
 
@@ -458,7 +626,7 @@ Host → Modem:  E0 04 03 <mode>
 | 0x00 | Idle — no mode active |
 | 0x01 | D-STAR active |
 
-BlueDV sends SET_MODE(idle) before SET_FREQ during init, SET_MODE(D-STAR) after SET_CONFIG to activate, and SET_MODE(idle) after DSTAR_EOT to deactivate.
+Sends SET_MODE(idle) before SET_FREQ during init, SET_MODE(D-STAR) after SET_CONFIG to activate, and SET_MODE(idle) after DSTAR_EOT to deactivate.
 
 **Expected response:** `ACK` (0x70) — the ACK payload echoes cmd 0x03: `E0 04 70 03`
 
@@ -475,13 +643,13 @@ Payload layout (9 bytes):
 [5..8]  = TX frequency (Hz), little-endian uint32
 ```
 
-> **Note (2026-04-14):** BlueDV pcap confirms only 9 payload bytes — no rfLevel or POCSAG frequency fields (unlike MMDVMHost which sends 14). The firmware ACKs SET_FREQ without processing the values. BlueDV sends 434.3 MHz (`60 E4 E2 19` LE = 434300000 Hz).
+> **Note (2026-04-14):** pcap confirms only 9 payload bytes — no rfLevel or POCSAG frequency fields (unlike MMDVMHost which sends 14). The firmware ACKs SET_FREQ without processing the values. Sends 434.3 MHz (`60 E4 E2 19` LE = 434300000 Hz).
 
 **Expected response:** `ACK` (0x70)
 
 #### SET_CONFIG — Protocol v1 (21 bytes) — TH-D75
 
-The TH-D75 reports protocol v1. This is the layout confirmed by BlueDV pcap.
+The TH-D75 reports protocol v1. This is the layout confirmed by pcap.
 
 ```
 Host → Modem:  E0 15 02 <18 payload bytes>
@@ -512,9 +680,9 @@ v1 payload layout (18 bytes):
 | 16 | ysfTXHang | 0x04 | |
 | 17 | p25TXHang | 0x80 | |
 
-> **Note:** The flags byte **must include txInvert (0x02)**. BlueDV sends 0x82 (simplex + txInvert). Without txInvert, the modem may not communicate correctly.
+> **Note:** The flags byte **must include txInvert (0x02)**. Sends 0x82 (simplex + txInvert). Without txInvert, the modem may not communicate correctly.
 
-> **Note:** BlueDV sends only 18 payload bytes (21 total) vs MMDVMHost's 23 payload bytes (26 total). The firmware accepts the shorter payload.
+> **Note:** Sends only 18 payload bytes (21 total) vs MMDVMHost's 23 payload bytes (26 total). The firmware accepts the shorter payload.
 
 **Expected response:** `ACK` (0x70) if accepted, `NAK` (0x7F) with reason byte if rejected.
 
@@ -543,7 +711,7 @@ v2 payload layout (37 bytes):
 | 10–13 | other TX levels | 0 | DMR, YSF, P25, NXDN (unused) |
 | 14–36 | reserved | 0 | pocsagTXLevel, hang times, etc. |
 
-### 8.5 ACK / NAK Frames
+### 9.5 ACK / NAK Frames
 
 **ACK:**
 ```
@@ -564,7 +732,7 @@ Modem → Host:  E0 05 7F <cmd> <reason>
 | 4 | Invalid configuration data |
 | 5 | Invalid D-STAR data length |
 
-### 8.6 GET_STATUS (Keepalive Polling)
+### 9.6 GET_STATUS (Keepalive Polling)
 
 ```
 Host → Modem:  E0 03 01
@@ -583,7 +751,7 @@ Modem → Host:  E0 <len> 01 <enabledModes> <modemState> <byte3> <dstarSpace> ..
 | modemState | payload[1] | Current operating state (0 = idle) |
 | dstarSpace | payload[3] | Number of D-STAR frames the modem can buffer |
 
-### 8.7 D-STAR Data Frames
+### 9.7 D-STAR Data Frames
 
 #### DSTAR_HEADER (0x10) — 44 bytes total
 
@@ -623,7 +791,7 @@ Modem → Host:  E0 03 12
 
 Modem-to-host only. Indicates the D-STAR signal was lost (RF timeout). The host should treat this the same as EOT.
 
-### 8.8 Key Differences: MMDVM vs DV Gateway Terminal
+### 9.8 Key Differences: MMDVM vs DV Gateway Terminal
 
 | Aspect | IC-705 (DV Gateway Terminal) | TH-D75 (MMDVM) |
 |--------|------------------------------|-----------------|
@@ -638,16 +806,16 @@ Modem-to-host only. Indicates the D-STAR signal was lost (RF timeout). The host 
 | Handshake | None (just start polling) | GET_VERSION → SET_MODE → SET_FREQ → SET_CONFIG → SET_MODE(D-STAR) |
 | PTT control | Via data flow or RTS | Via data flow (header starts TX, EOT ends it) |
 
-### 8.9 Reference Implementations
+### 9.9 Reference Implementations
 
 - **g4klx/MMDVMHost** (`Modem.cpp`) — canonical host-side implementation. The `open()` method defines the handshake order. `setConfig1()`/`setConfig2()` define SET_CONFIG layouts for v1/v2.
 - **g4klx/MMDVM** (`SerialPort.cpp`) — canonical firmware. The `setConfig()` function parses SET_CONFIG payloads and validates lengths.
 - **doug-h/DroidStar** — known working client for TH-D75 over Bluetooth SPP.
-- **BlueDV** (Windows) — confirmed working with TH-D75 over USB-C; pcap captured 2026-04-14.
+- **BlueDV** (Windows) — confirmed working with TH-D75 over USB-C;
 
 ---
 
-## 9. Pcap Evidence Summary
+## 10. Pcap Evidence Summary
 
 ### Observations (2026-04-01)
 

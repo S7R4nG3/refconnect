@@ -158,13 +158,17 @@ func readFrame(r io.Reader) (icomFrame, error) {
 		return icomFrame{}, err
 	}
 
-	// Build the full raw frame for error messages: [LEN][TYPE][DATA...][0xFF]
-	rawFrame := make([]byte, 1+length)
-	rawFrame[0] = lenBuf[0]
-	copy(rawFrame[1:], content)
+	// rawFrame builds the full frame [LEN][content...] for error messages.
+	// Deferred to avoid allocation on the happy path.
+	rawFrame := func() []byte {
+		rf := make([]byte, 1+length)
+		rf[0] = lenBuf[0]
+		copy(rf[1:], content)
+		return rf
+	}
 
 	if content[length-1] != frameTerminator {
-		return icomFrame{}, fmt.Errorf("radio: bad frame terminator — raw: % 02X", rawFrame)
+		return icomFrame{}, fmt.Errorf("radio: bad frame terminator — raw: % 02X", rawFrame())
 	}
 
 	ftype := content[0]
@@ -176,20 +180,20 @@ func readFrame(r io.Reader) (icomFrame, error) {
 
 	case typeRXHeader:
 		if len(data) < dstar.HeaderBytes {
-			return icomFrame{}, fmt.Errorf("radio: RX header too short (%d bytes) — raw: % 02X", len(data), rawFrame)
+			return icomFrame{}, fmt.Errorf("radio: RX header too short (%d bytes) — raw: % 02X", len(data), rawFrame())
 		}
 		var raw [dstar.HeaderBytes]byte
 		copy(raw[:], data[:dstar.HeaderBytes])
 		h, err := dstar.DecodeHeader(raw)
 		if err != nil {
-			return icomFrame{}, fmt.Errorf("radio: header decode: %w — raw: % 02X", err, rawFrame)
+			return icomFrame{}, fmt.Errorf("radio: header decode: %w — raw: % 02X", err, rawFrame())
 		}
 		return icomFrame{ftype: ftype, header: &h}, nil
 
 	case typeRXVoice:
 		// data = [seq1][seq2][9 AMBE][3 slow-data]
 		if len(data) < voiceDataLen {
-			return icomFrame{}, fmt.Errorf("radio: RX voice frame too short (%d bytes) — raw: % 02X", len(data), rawFrame)
+			return icomFrame{}, fmt.Errorf("radio: RX voice frame too short (%d bytes) — raw: % 02X", len(data), rawFrame())
 		}
 		// seq1 (data[0]) is the absolute frame counter; not needed for routing.
 		seq2 := data[1]
@@ -204,6 +208,6 @@ func readFrame(r io.Reader) (icomFrame, error) {
 		return icomFrame{ftype: ftype, voice: f}, nil
 
 	default:
-		return icomFrame{}, fmt.Errorf("radio: unknown frame type 0x%02X — raw: % 02X", ftype, rawFrame)
+		return icomFrame{}, fmt.Errorf("radio: unknown frame type 0x%02X — raw: % 02X", ftype, rawFrame())
 	}
 }

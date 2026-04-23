@@ -22,6 +22,14 @@ func buildLogPanel(a *App) (content fyne.CanvasObject, toggleBtn *widget.Button)
 		},
 	)
 
+	// Auto-scroll to the newest entry when the list changes.
+	a.logLines.AddListener(binding.NewDataListener(func() {
+		lines, _ := a.logLines.Get()
+		if n := len(lines); n > 0 {
+			list.ScrollToBottom()
+		}
+	}))
+
 	logContent := container.NewVScroll(list)
 	logContent.SetMinSize(fyne.NewSize(0, 200))
 	logContent.Hide()

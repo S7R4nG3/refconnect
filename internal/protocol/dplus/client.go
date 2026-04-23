@@ -46,9 +46,9 @@ type Client struct {
 // New returns a new DPlus client.
 func New() *Client {
 	return &Client{
-		hdrCh:   make(chan dstar.DVHeader, 8),
-		frmCh:   make(chan dstar.DVFrame, 32),
-		eventCh: make(chan protocol.Event, 8),
+		hdrCh:   make(chan dstar.DVHeader, 16),
+		frmCh:   make(chan dstar.DVFrame, 64),
+		eventCh: make(chan protocol.Event, 16),
 	}
 }
 
@@ -247,15 +247,14 @@ func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 // rxLoop reads inbound DPlus UDP packets.
 func (c *Client) rxLoop() {
 	defer c.wg.Done()
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return
+	}
 	buf := make([]byte, udpReadBuf)
 	for {
-		c.mu.Lock()
-		conn := c.conn
-		c.mu.Unlock()
-		if conn == nil {
-			return
-		}
-
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			select {

@@ -16,25 +16,26 @@ func EncodeHeader(h DVHeader) ([HeaderBytes]byte, error) {
 	buf[1] = h.Flag2
 	buf[2] = h.Flag3
 
-	fields := []struct {
-		val string
-		n   int
-		off int
-	}{
-		{h.RPT2, 8, 3},
-		{h.RPT1, 8, 11},
-		{h.YourCall, 8, 19},
-		{h.MyCall, 8, 27},
-		{h.MyCallSuffix, 4, 35},
-	}
-	for _, f := range fields {
-		padded := PadCallsign(strings.ToUpper(f.val), f.n)
-		copy(buf[f.off:f.off+f.n], padded)
-	}
+	// Pad callsign fields directly into the output buffer to avoid
+	// intermediate allocations from PadCallsign.
+	padInto(buf[3:11], strings.ToUpper(h.RPT2))
+	padInto(buf[11:19], strings.ToUpper(h.RPT1))
+	padInto(buf[19:27], strings.ToUpper(h.YourCall))
+	padInto(buf[27:35], strings.ToUpper(h.MyCall))
+	padInto(buf[35:39], strings.ToUpper(h.MyCallSuffix))
 
 	crc := crc16CCITT(buf[:39])
 	binary.LittleEndian.PutUint16(buf[39:41], crc)
 	return buf, nil
+}
+
+// padInto copies src into dst, space-padding any remaining bytes.
+// No allocations — writes directly into the destination slice.
+func padInto(dst []byte, src string) {
+	n := copy(dst, src)
+	for i := n; i < len(dst); i++ {
+		dst[i] = ' '
+	}
 }
 
 // DecodeHeader parses a 41-byte wire header into a DVHeader.

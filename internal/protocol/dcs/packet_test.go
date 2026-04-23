@@ -100,10 +100,11 @@ func TestVoicePacketRoundTrip(t *testing.T) {
 		End:      false,
 	}
 
-	pkt, err := encodeVoicePacket(0x1234, 5, false, hdr, frm, 42)
+	rawHdr, err := dstar.EncodeHeader(hdr)
 	if err != nil {
-		t.Fatalf("encodeVoicePacket: %v", err)
+		t.Fatalf("EncodeHeader: %v", err)
 	}
+	pkt := encodeVoicePacket(0x1234, 5, false, rawHdr, frm, 42)
 	if len(pkt) != voicePacketLen {
 		t.Fatalf("voice packet length = %d, want %d", len(pkt), voicePacketLen)
 	}
@@ -183,10 +184,11 @@ func TestVoicePacketEndFlag(t *testing.T) {
 		End:  true,
 	}
 
-	pkt, err := encodeVoicePacket(0xABCD, 20, true, hdr, frm, 0)
+	rawHdr, err := dstar.EncodeHeader(hdr)
 	if err != nil {
-		t.Fatalf("encodeVoicePacket: %v", err)
+		t.Fatalf("EncodeHeader: %v", err)
 	}
+	pkt := encodeVoicePacket(0xABCD, 20, true, rawHdr, frm, 0)
 
 	_, gotFrm, _, err := parsePacket(pkt)
 	if err != nil {

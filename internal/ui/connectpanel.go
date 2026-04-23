@@ -26,7 +26,7 @@ var reflectorTypes = []reflectorType{
 	{"XRF", protocol.ProtoDExtra, 30001, "openquad.net"},
 	{"REF", protocol.ProtoDPlus, 20001, "dstargateway.org"},
 	{"XLX", protocol.ProtoDExtra, 30001, ""},
-	{"DCS", protocol.ProtoDCS, 30051, "openquad.net"},
+	{"DCS", protocol.ProtoDCS, 30051, "xreflector.net"},
 }
 
 func reflectorTypeByPrefix(prefix string) reflectorType {

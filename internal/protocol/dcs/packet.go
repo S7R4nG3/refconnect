@@ -117,15 +117,13 @@ func buildKeepalive(clientCall string, clientModule byte, reflectorCall string, 
 }
 
 // encodeVoicePacket builds a 100-byte DCS voice packet with embedded header.
-// The header is 39 bytes (no CRC), followed by stream ID and voice data.
-func encodeVoicePacket(streamID uint16, seq uint8, end bool, hdr dstar.DVHeader, f dstar.DVFrame, txSeq uint32) ([]byte, error) {
-	raw, err := dstar.EncodeHeader(hdr)
-	if err != nil {
-		return nil, err
-	}
+// rawHdr is the pre-encoded 41-byte D-STAR header (only the first 39 bytes are
+// used — the CRC is omitted). Callers should encode the header once per
+// transmission and pass the cached bytes to avoid re-encoding every frame.
+func encodeVoicePacket(streamID uint16, seq uint8, end bool, rawHdr [dstar.HeaderBytes]byte, f dstar.DVFrame, txSeq uint32) []byte {
 	pkt := make([]byte, voicePacketLen)
 	copy(pkt[0:4], voiceTag[:])
-	copy(pkt[4:43], raw[:headerNoCRC]) // 39 bytes, skip CRC
+	copy(pkt[4:43], rawHdr[:headerNoCRC]) // 39 bytes, skip CRC
 	binary.LittleEndian.PutUint16(pkt[43:45], streamID)
 	s := seq
 	if end {
@@ -140,7 +138,7 @@ func encodeVoicePacket(streamID uint16, seq uint8, end bool, hdr dstar.DVHeader,
 	pkt[60] = byte(txSeq >> 16)
 	pkt[61] = 0x01 // filler byte, per xlxd
 	// bytes 62-99 remain zero (padding)
-	return pkt, nil
+	return pkt
 }
 
 // parsePacket attempts to decode a received DCS UDP payload.

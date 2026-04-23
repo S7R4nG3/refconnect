@@ -36,11 +36,12 @@ type Client struct {
 	wg     sync.WaitGroup // tracks rxLoop + keepaliveLoop
 
 	// TX state: DCS embeds the full header in every voice packet, so we
-	// cache the current TX header and stream ID. txSeq is an absolute
-	// packet counter placed at bytes 58-60 of each outgoing voice packet.
-	streamID uint16
-	txHeader dstar.DVHeader
-	txSeq    uint32
+	// cache the current TX header (pre-encoded) and stream ID. txSeq is an
+	// absolute packet counter placed at bytes 58-60 of each outgoing voice
+	// packet.
+	streamID      uint16
+	txHeaderRaw   [dstar.HeaderBytes]byte // pre-encoded header bytes
+	txSeq         uint32
 
 	// RX dedup: each voice packet carries a header, but we only forward
 	// the first header per stream to avoid resetting the radio's decoder.
@@ -55,9 +56,9 @@ type Client struct {
 // New returns a new DCS client. Call Connect to establish a link.
 func New() *Client {
 	return &Client{
-		hdrCh:   make(chan dstar.DVHeader, 8),
-		frmCh:   make(chan dstar.DVFrame, 32),
-		eventCh: make(chan protocol.Event, 8),
+		hdrCh:   make(chan dstar.DVHeader, 16),
+		frmCh:   make(chan dstar.DVFrame, 64),
+		eventCh: make(chan protocol.Event, 16),
 	}
 }
 
@@ -187,8 +188,12 @@ func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	if c.conn == nil {
 		return fmt.Errorf("dcs: not connected")
 	}
+	raw, err := dstar.EncodeHeader(hdr)
+	if err != nil {
+		return fmt.Errorf("dcs: encode header: %w", err)
+	}
 	c.streamID = nextStreamID()
-	c.txHeader = hdr
+	c.txHeaderRaw = raw
 	c.txSeq = 0
 	log.Printf("dcs: SendHeader streamID=%04X MYCALL=%q URCALL=%q",
 		c.streamID, hdr.MyCall, hdr.YourCall)
@@ -198,20 +203,17 @@ func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 // SendFrame transmits a voice frame with the cached header embedded.
 func (c *Client) SendFrame(f dstar.DVFrame) error {
 	c.mu.Lock()
-	conn, addr, sid, hdr, seq := c.conn, c.remoteAddr, c.streamID, c.txHeader, c.txSeq
+	conn, addr, sid, rawHdr, seq := c.conn, c.remoteAddr, c.streamID, c.txHeaderRaw, c.txSeq
 	c.txSeq++
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dcs: not connected")
 	}
-	pkt, err := encodeVoicePacket(sid, f.Seq, f.End, hdr, f, seq)
-	if err != nil {
-		return err
-	}
+	pkt := encodeVoicePacket(sid, f.Seq, f.End, rawHdr, f, seq)
 	if f.Seq == 0 {
 		log.Printf("dcs: TX voice packet #0 (%d bytes):\n%s", len(pkt), hex.Dump(pkt[:min(len(pkt), 64)]))
 	}
-	_, err = conn.WriteToUDP(pkt, addr)
+	_, err := conn.WriteToUDP(pkt, addr)
 	return err
 }
 
@@ -222,15 +224,14 @@ func (c *Client) Events() <-chan protocol.Event    { return c.eventCh }
 // rxLoop reads inbound UDP packets and dispatches headers/frames.
 func (c *Client) rxLoop() {
 	defer c.wg.Done()
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return
+	}
 	buf := make([]byte, udpReadBuf)
 	for {
-		c.mu.Lock()
-		conn := c.conn
-		c.mu.Unlock()
-		if conn == nil {
-			return
-		}
-
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			select {
