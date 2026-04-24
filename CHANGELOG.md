@@ -1,3 +1,9 @@
+## v0.8.2 (2026-04-24)
+
+### Fix
+
+- **protocol/dcs**: fixing connection/disconnection issue
+
 ## v0.8.1 (2026-04-23)
 
 ### Fix
