@@ -12,15 +12,12 @@ func TestBuildConnectPacket(t *testing.T) {
 	if len(pkt) != connectPacketLen {
 		t.Fatalf("connect packet length = %d, want %d", len(pkt), connectPacketLen)
 	}
-	// Bytes 0-6: callsign base, byte 7: local module letter.
-	if string(pkt[0:7]) != "KR4GCQ " {
-		t.Errorf("callsign base = %q, want %q", string(pkt[0:7]), "KR4GCQ ")
-	}
-	if pkt[7] != 'D' {
-		t.Errorf("byte[7] module = %c, want D", pkt[7])
+	// Bytes 0-7: full callsign (space-padded), byte 8: module letter.
+	if string(pkt[0:8]) != "KR4GCQ D" {
+		t.Errorf("callsign = %q, want %q", string(pkt[0:8]), "KR4GCQ D")
 	}
 	if pkt[8] != 'D' {
-		t.Errorf("byte[8] module repeat = %c, want D", pkt[8])
+		t.Errorf("byte[8] module = %c, want D", pkt[8])
 	}
 	if pkt[9] != 'C' {
 		t.Errorf("target module = %c, want C", pkt[9])
@@ -31,54 +28,79 @@ func TestBuildConnectPacket(t *testing.T) {
 	if string(pkt[11:19]) != "DCS001  " {
 		t.Errorf("reflector callsign = %q, want %q", string(pkt[11:19]), "DCS001  ")
 	}
-	// Bytes 19-518 should be zeros (HTML info field, left empty).
-	for i := 19; i < connectPacketLen; i++ {
+	// Bytes 19+: HTML info field starts with the client identifier.
+	info := string(pkt[19 : 19+len(clientInfoHTML)])
+	if info != string(clientInfoHTML) {
+		t.Errorf("HTML info = %q, want %q", info, string(clientInfoHTML))
+	}
+	// Remainder of the info field should be zero-padded.
+	for i := 19 + len(clientInfoHTML); i < connectPacketLen; i++ {
 		if pkt[i] != 0 {
-			t.Errorf("byte[%d] = 0x%02X, want 0x00", i, pkt[i])
+			t.Errorf("byte[%d] = 0x%02X, want 0x00 (zero padding)", i, pkt[i])
 			break
 		}
 	}
 }
 
-func TestBuildDisconnectPacket(t *testing.T) {
-	pkt := buildDisconnectPacket("KR4GCQ D", 'C')
-	if len(pkt) != disconnectPacketLen {
-		t.Fatalf("disconnect packet length = %d, want %d", len(pkt), disconnectPacketLen)
+func TestBuildDisconnectPackets(t *testing.T) {
+	short, long := buildDisconnectPackets("KR4GCQ D", 'G', "DCS001  ")
+
+	// Short packet: 11 bytes.
+	if len(short) != disconnectShortLen {
+		t.Fatalf("short disconnect length = %d, want %d", len(short), disconnectShortLen)
 	}
-	if string(pkt[0:8]) != "KR4GCQ D" {
-		t.Errorf("callsign = %q, want %q", string(pkt[0:8]), "KR4GCQ D")
+
+	// Long packet: 19 bytes.
+	if len(long) != disconnectLongLen {
+		t.Fatalf("long disconnect length = %d, want %d", len(long), disconnectLongLen)
 	}
-	if pkt[8] != 'C' {
-		t.Errorf("module = %c, want C", pkt[8])
+
+	// Both share the same first 11 bytes — test via the long packet.
+	// Bytes 0-7: callsign (space-padded), byte 8: client module.
+	if string(long[0:8]) != "KR4GCQ D" {
+		t.Errorf("callsign = %q, want %q", string(long[0:8]), "KR4GCQ D")
 	}
-	if pkt[9] != ' ' {
-		t.Errorf("byte[9] = 0x%02X, want 0x20 (space)", pkt[9])
+	if long[8] != 'G' {
+		t.Errorf("byte[8] client module = 0x%02X, want 'G'", long[8])
+	}
+	// Byte 9: space (disconnect indicator).
+	if long[9] != ' ' {
+		t.Errorf("byte[9] = 0x%02X, want 0x20 (space)", long[9])
+	}
+	// Byte 10: null.
+	if long[10] != 0x00 {
+		t.Errorf("byte[10] = 0x%02X, want 0x00", long[10])
+	}
+	// Bytes 11-18: reflector callsign (long format only).
+	if string(long[11:19]) != "DCS001  " {
+		t.Errorf("reflector callsign = %q, want %q", string(long[11:19]), "DCS001  ")
+	}
+	// Short must equal the first 11 bytes of long.
+	for i := 0; i < disconnectShortLen; i++ {
+		if short[i] != long[i] {
+			t.Errorf("short[%d] = 0x%02X, long[%d] = 0x%02X — mismatch", i, short[i], i, long[i])
+		}
 	}
 }
 
-func TestBuildKeepalive(t *testing.T) {
-	pkt := buildKeepalive("KR4GCQ D", 'A', "DCS001  ", 'C')
-	if len(pkt) != keepalivePacketLen {
-		t.Fatalf("keepalive length = %d, want %d", len(pkt), keepalivePacketLen)
+func TestBuildPoll(t *testing.T) {
+	pkt := buildPoll("KR4GCQ D", 'G', "DCS001  ")
+	if len(pkt) != pollPacketLen {
+		t.Fatalf("poll length = %d, want %d", len(pkt), pollPacketLen)
 	}
-	if string(pkt[0:7]) != "DCS001 " {
-		t.Errorf("reflector callsign = %q, want %q", string(pkt[0:7]), "DCS001 ")
+	// Bytes 0-6: client callsign base (7 chars), byte 7: client module.
+	if string(pkt[0:7]) != "KR4GCQ " {
+		t.Errorf("client callsign = %q, want %q", string(pkt[0:7]), "KR4GCQ ")
 	}
-	if pkt[7] != 'C' {
-		t.Errorf("reflector module = %c, want C", pkt[7])
+	if pkt[7] != 'G' {
+		t.Errorf("client module = %c, want G", pkt[7])
 	}
-	if pkt[8] != ' ' {
-		t.Errorf("separator = 0x%02X, want 0x20 (space)", pkt[8])
+	if pkt[8] != 0x00 {
+		t.Errorf("separator = 0x%02X, want 0x00", pkt[8])
 	}
-	if string(pkt[9:16]) != "KR4GCQ " {
-		t.Errorf("client callsign = %q, want %q", string(pkt[9:16]), "KR4GCQ ")
-	}
-	if pkt[16] != 'A' || pkt[17] != 'A' {
-		t.Errorf("client module bytes = %c %c, want A A", pkt[16], pkt[17])
-	}
-	if pkt[18] != 0x0A || pkt[19] != 0x00 || pkt[20] != 0x20 || pkt[21] != 0x20 {
-		t.Errorf("trailing tag = %02X %02X %02X %02X, want 0A 00 20 20",
-			pkt[18], pkt[19], pkt[20], pkt[21])
+	// Bytes 9-16: reflector callsign (8 chars, space-padded).
+	if string(pkt[9:17]) != "DCS001  " {
+		t.Errorf("reflector callsign = %q, want %q", string(pkt[9:17]), "DCS001  ")
 	}
 }
 

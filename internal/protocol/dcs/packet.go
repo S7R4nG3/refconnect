@@ -15,14 +15,28 @@
 //
 // Connect ACK: 22-byte keepalive-format response confirming the link.
 //
-// Disconnect packet (19 bytes):
+// Disconnect packet (19 bytes, per ircDDBGateway CT_UNLINK):
 //
-//	[0-7]   callsign, space-padded to 8 bytes
-//	[8]     module letter
-//	[9]     space (0x20)
-//	[10-18] zero padding
+//	[0-6]   client callsign (7 chars, space-padded)
+//	[7]     space (0x20)
+//	[8]     client module letter (must match connect registration)
+//	[9]     space (0x20) — disconnect indicator
+//	[10]    null (0x00)
+//	[11-18] reflector callsign (8 chars, space-padded)
 //
-// Keepalive (22 bytes):
+// Client poll / keepalive (17 bytes, per ircDDBGateway DCSHandler):
+//
+//	[0-7]   client callsign (8 bytes, space-padded, with module at [7])
+//	[8]     0x00 (null separator)
+//	[9-16]  reflector callsign (8 bytes, space-padded)
+//
+// NOTE: xlxd's IsValidKeepAlivePacket extracts the callsign from bytes 0-7.
+// Sending a 22-byte packet with the reflector callsign at bytes 0-7 causes
+// the server to fail the client lookup and silently ignore the keepalive.
+// The 17-byte format puts the CLIENT callsign first, matching the server's
+// expectation.
+//
+// Server keepalive (22 bytes, server → client):
 //
 //	[0-6]   reflector callsign (7 chars)
 //	[7]     reflector module letter
@@ -60,15 +74,21 @@ const headerNoCRC = dstar.HeaderBytes - 2 // 39
 
 // Packet sizes.
 const (
-	connectPacketLen    = 519
-	disconnectPacketLen = 19
-	keepalivePacketLen  = 22
-	voicePacketLen      = 100
-	voiceTagLen         = 4
+	connectPacketLen       = 519
+	disconnectShortLen     = 11
+	disconnectLongLen      = 19
+	pollPacketLen          = 17
+	voicePacketLen         = 100
+	voiceTagLen            = 4
 )
 
 // voiceTag is the 4-byte ASCII prefix on DCS voice/data packets.
 var voiceTag = [voiceTagLen]byte{'0', '0', '0', '1'}
+
+// clientInfoHTML is placed in the 500-byte HTML info field (bytes 19-518) of
+// the DCS connect packet. XLX/DCS reflector dashboards display this to
+// identify the connected client software.
+var clientInfoHTML = []byte("<img src=\"https://github.com/S7R4nG3/refconnect/raw/main/docs/antenna-icon.png\">  <a href=\"https://github.com/S7R4nG3/refconnect\"><b>RefConnect</b></a> -  A DStar client")
 
 // buildConnectPacket builds the 519-byte DCS link request.
 // Bytes 0-6 are the callsign base (7 chars), byte 7 is the local module
@@ -76,43 +96,56 @@ var voiceTag = [voiceTagLen]byte{'0', '0', '0', '1'}
 func buildConnectPacket(callsign string, localModule, targetModule byte, reflectorCall string) []byte {
 	pkt := make([]byte, connectPacketLen)
 	cs := dstar.PadCallsign(callsign, 8)
-	copy(pkt[0:7], cs[:7])
-	pkt[7] = localModule  // module letter at the 8th callsign position
-	pkt[8] = localModule  // repeated
+	copy(pkt[0:8], cs[:8])  // full 8-char callsign (space-padded)
+	pkt[8] = localModule   // module letter in the protocol field
 	pkt[9] = targetModule
 	pkt[10] = 0x00
 	copy(pkt[11:19], dstar.PadCallsign(reflectorCall, 8))
-	// Bytes 19-518: HTML info field (left empty; only relevant for
-	// repeater/dongle status pages which require ircDDBGateway registration).
+	// Bytes 19-518: HTML info field — identifies the client software on the
+	// reflector dashboard. Dongle apps (DV Connect, BlueDV) populate this so
+	// the dashboard can display the client name alongside the callsign.
+	copy(pkt[19:], clientInfoHTML)
 	return pkt
 }
 
-// buildDisconnectPacket builds the 19-byte DCS unlink packet.
-func buildDisconnectPacket(callsign string, module byte) []byte {
-	pkt := make([]byte, disconnectPacketLen)
-	copy(pkt[0:8], dstar.PadCallsign(callsign, 8))
-	pkt[8] = module
-	pkt[9] = ' '
-	return pkt
+// buildDisconnectPackets returns both short (11-byte) and long (19-byte)
+// DCS unlink packets. Different server implementations accept different
+// sizes — xlxd accepts 11 or 19, other DCS servers may only accept one.
+// Both formats mirror the connect packet structure with byte 9 changed
+// from the target module to a space (disconnect indicator):
+//
+//	[0-7]   client callsign (8 chars, space-padded)
+//	[8]     client module letter (same as connect byte 8)
+//	[9]     space (0x20) — disconnect indicator (connect has target module here)
+//	[10]    null (0x00)
+//	[11-18] reflector callsign (8 chars, space-padded) — long format only
+func buildDisconnectPackets(callsign string, clientModule byte, reflectorCall string) (short []byte, long []byte) {
+	// Build the long (19-byte) packet first.
+	long = make([]byte, disconnectLongLen)
+	cs := dstar.PadCallsign(callsign, 8)
+	copy(long[0:8], cs[:8])
+	long[8] = clientModule
+	long[9] = ' '
+	long[10] = 0x00
+	copy(long[11:19], dstar.PadCallsign(reflectorCall, 8))
+	// Short (11-byte) is just the first 11 bytes.
+	short = make([]byte, disconnectShortLen)
+	copy(short, long[:disconnectShortLen])
+	return short, long
 }
 
-// buildKeepalive returns the 22-byte DCS keepalive packet.
-// Format: reflectorCall(7) + refModule(1) + space(1) + clientCall(7) +
-// clientModule(1) + clientModule(1) + tag{0x0A, 0x00, 0x20, 0x20}.
-func buildKeepalive(clientCall string, clientModule byte, reflectorCall string, reflectorModule byte) []byte {
-	pkt := make([]byte, keepalivePacketLen)
-	rs := dstar.PadCallsign(reflectorCall, 8)
-	copy(pkt[0:7], rs[:7])
-	pkt[7] = reflectorModule
-	pkt[8] = ' '
+// buildPoll returns the 17-byte DCS client keepalive/poll packet.
+// Format: clientCall(7) + clientModule(1) + 0x00 + reflectorCall(8).
+// This matches the ircDDBGateway DCSHandler implementation. xlxd's
+// IsValidKeepAlivePacket extracts bytes 0-7 as the client callsign for
+// peer lookup, so the client callsign MUST be at the start of the packet.
+func buildPoll(clientCall string, clientModule byte, reflectorCall string) []byte {
+	pkt := make([]byte, pollPacketLen)
 	cs := dstar.PadCallsign(clientCall, 8)
-	copy(pkt[9:16], cs[:7])
-	pkt[16] = clientModule
-	pkt[17] = clientModule
-	pkt[18] = 0x0A
-	pkt[19] = 0x00
-	pkt[20] = ' '
-	pkt[21] = ' '
+	copy(pkt[0:7], cs[:7])
+	pkt[7] = clientModule
+	pkt[8] = 0x00
+	copy(pkt[9:17], dstar.PadCallsign(reflectorCall, 8))
 	return pkt
 }
 

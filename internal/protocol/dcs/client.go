@@ -165,8 +165,17 @@ func (c *Client) Disconnect() error {
 	if c.conn == nil {
 		return nil
 	}
-	pkt := buildDisconnectPacket(c.cfg.MyCall, c.reflectorModule)
-	c.conn.WriteToUDP(pkt, c.remoteAddr) //nolint:errcheck
+	// Send disconnect in both short (11-byte) and long (19-byte) formats.
+	// Different DCS servers accept different sizes; sending both covers
+	// xlxd, original DCS, and xreflector variants.
+	shortPkt, longPkt := buildDisconnectPackets(c.cfg.MyCall, 'G', c.reflectorCall)
+	log.Printf("dcs: sending disconnect short (%d bytes):\n%s", len(shortPkt), hex.Dump(shortPkt))
+	c.conn.WriteToUDP(shortPkt, c.remoteAddr) //nolint:errcheck
+	time.Sleep(50 * time.Millisecond)
+	log.Printf("dcs: sending disconnect long (%d bytes):\n%s", len(longPkt), hex.Dump(longPkt))
+	c.conn.WriteToUDP(longPkt, c.remoteAddr) //nolint:errcheck
+	time.Sleep(50 * time.Millisecond)
+	c.conn.WriteToUDP(shortPkt, c.remoteAddr) //nolint:errcheck
 	close(c.stopCh)
 	err := c.conn.Close()
 	c.conn = nil
@@ -307,16 +316,15 @@ func (c *Client) keepaliveLoop() {
 			conn := c.conn
 			callsign := c.cfg.MyCall
 			refCall := c.reflectorCall
-			refMod := c.reflectorModule
 			c.mu.Unlock()
 			if conn == nil {
 				return
 			}
-			pkt := buildKeepalive(callsign, 'G', refCall, refMod)
+			pkt := buildPoll(callsign, 'G', refCall)
 			if _, err := conn.WriteToUDP(pkt, c.remoteAddr); err != nil {
-				log.Printf("dcs: keepalive send error: %v", err)
+				log.Printf("dcs: poll send error: %v", err)
 			} else {
-				log.Printf("dcs: keepalive sent (%d bytes)", len(pkt))
+				log.Printf("dcs: poll sent (%d bytes):\n%s", len(pkt), hex.Dump(pkt))
 			}
 		}
 	}
