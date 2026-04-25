@@ -442,34 +442,58 @@ func (a *App) startRouter() {
 	rt.Start()
 
 	go func() {
-		for evt := range rt.Events() {
-			if evt.Err != nil {
-				a.appendLog("Router error: " + evt.Err.Error())
-				continue
-			}
-			if evt.Header != nil {
-				who := evt.Header.MyCall
-				fyne.Do(func() { a.lastHeard.Set(who) }) //nolint:errcheck
-				dir := "RX"
-				if evt.Direction == router.DirTX {
-					dir = "TX"
-					if a.irc != nil {
-						a.irc.AnnounceUser(*evt.Header)
+		// rxTimeout clears the RX indicator when a remote station drops
+		// off abruptly without sending an end-of-stream frame.
+		const rxTimeoutDur = 1500 * time.Millisecond
+		rxTimer := time.NewTimer(rxTimeoutDur)
+		rxTimer.Stop() // not active until RX starts
+		defer rxTimer.Stop()
+
+		for {
+			select {
+			case evt, ok := <-rt.Events():
+				if !ok {
+					return
+				}
+				if evt.Err != nil {
+					a.appendLog("Router error: " + evt.Err.Error())
+					continue
+				}
+				if evt.Header != nil {
+					who := evt.Header.MyCall
+					fyne.Do(func() { a.lastHeard.Set(who) }) //nolint:errcheck
+					dir := "RX"
+					if evt.Direction == router.DirTX {
+						dir = "TX"
+						if a.irc != nil {
+							a.irc.AnnounceUser(*evt.Header)
+						}
+					}
+					a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))
+					if evt.Direction == router.DirRX {
+						fyne.Do(func() { a.rxActive.Set(true) }) //nolint:errcheck
+						rxTimer.Reset(rxTimeoutDur)
+					} else {
+						fyne.Do(func() { a.txActive.Set(true) }) //nolint:errcheck
 					}
 				}
-				a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))
-				if evt.Direction == router.DirRX {
-					fyne.Do(func() { a.rxActive.Set(true) }) //nolint:errcheck
-				} else {
-					fyne.Do(func() { a.txActive.Set(true) }) //nolint:errcheck
+				if evt.Frame != nil {
+					if evt.Direction == router.DirRX {
+						rxTimer.Reset(rxTimeoutDur)
+					}
+					if evt.Frame.End {
+						if evt.Direction == router.DirRX {
+							rxTimer.Stop()
+							fyne.Do(func() { a.rxActive.Set(false) }) //nolint:errcheck
+						} else {
+							fyne.Do(func() { a.txActive.Set(false) }) //nolint:errcheck
+						}
+					}
 				}
-			}
-			if evt.Frame != nil && evt.Frame.End {
-				if evt.Direction == router.DirRX {
-					fyne.Do(func() { a.rxActive.Set(false) }) //nolint:errcheck
-				} else {
-					fyne.Do(func() { a.txActive.Set(false) }) //nolint:errcheck
-				}
+
+			case <-rxTimer.C:
+				log.Printf("ui: RX activity timeout — clearing indicator")
+				fyne.Do(func() { a.rxActive.Set(false) }) //nolint:errcheck
 			}
 		}
 	}()
