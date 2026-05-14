@@ -1,3 +1,14 @@
+## v0.9.0 (2026-05-14)
+
+### Feat
+
+- **ui**: adding reflector profile saving for easy selection - added dark mode toggle to ui
+
+### Fix
+
+- **internal/ui/app.go**: adding an RX timeout for the UI indicator to prevent UI blips when transmissions end abruptly
+- **bundled.go**: adding antenna icon to executables
+
 ## v0.8.2 (2026-04-24)
 
 ### Fix
