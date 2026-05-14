@@ -78,12 +78,22 @@ ui:
 ## Usage
 
 1. **Select your radio** — Choose the protocol (ICOM or Kenwood) and serial port in the Radio panel, then click **Open**.
-2. **Select a reflector** — Choose a saved reflector profile or enter a new one in the Connect panel.
+2. **Select a reflector** — Choose a saved reflector profile from the Profile dropdown, or fill in Type/ID/Domain/Module to create a new one.
 3. **Enter your callsign** — Set your callsign and gateway module suffix.
-4. **Click Connect** — The status panel will update once the link is established.
+4. **Click Connect** — The status panel will update once the link is established. The connected profile is remembered and reselected automatically on the next launch.
 5. **Transmit** — Key up on your radio! Welcome to D-STAR!
 
 The log panel shows timestamped activity including connections, heard callsigns, and errors.
+
+### Saving reflector profiles
+
+The Connect panel keeps a list of saved profiles you can switch between via the **Profile** dropdown:
+
+- **Save profile** — captures the current Type, ID, Domain, and Module fields and writes the entry into `config.yaml` under `reflectors`. The profile name is derived from the form (e.g. `REF001 C`); saving with the same name overwrites the existing entry, otherwise a new one is appended.
+- **Delete profile** — removes the currently selected entry from the dropdown and from `config.yaml`.
+- **Last used** — the most recent profile you connected to is stored in `last_used_reflector` and pre-selected on next launch.
+
+Because profiles live in `config.yaml`, you can migrate them between devices by copying that file. Callsign and gateway suffix are global and apply to every profile.
 
 ## License
 
