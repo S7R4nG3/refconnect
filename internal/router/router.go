@@ -45,6 +45,11 @@ type Config struct {
 	// ReflectorCall is the reflector's D-STAR callsign (e.g. "REF001").
 	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
 	ReflectorCall string
+
+	// TXText is a D-STAR slow data text message (up to 20 chars) injected
+	// into every outgoing superframe. It appears as the "User Message" on
+	// reflector status pages and ircDDB Last Heard listings.
+	TXText string
 }
 
 // Router routes DV frames between a radio and a reflector.
@@ -70,11 +75,16 @@ type Router struct {
 	// GPS data enabled.
 	gps     *aprs.Cache
 	dprsDec dstar.DPRSDecoder
+
+	// txText holds pre-scrambled slow data for a 20-char D-STAR text
+	// message injected into every outgoing superframe. This appears as
+	// the "User Message" on reflector status pages.
+	txText [dstar.MaxSeq + 1][3]byte
 }
 
 // New creates a Router.  Call Start to begin routing.
 func New(r radio.RadioInterface, ref protocol.Reflector, cfg Config) *Router {
-	return &Router{
+	rt := &Router{
 		radio:     r,
 		reflector: ref,
 		cfg:       cfg,
@@ -82,6 +92,11 @@ func New(r radio.RadioInterface, ref protocol.Reflector, cfg Config) *Router {
 		stopCh:    make(chan struct{}),
 		gps:       &aprs.Cache{},
 	}
+	if cfg.TXText != "" {
+		rt.txText = dstar.EncodeTextMessage(cfg.TXText)
+		log.Printf("router: TX text message: %q", cfg.TXText)
+	}
+	return rt
 }
 
 // GPS returns the shared GPS cache updated from the radio's outbound
@@ -207,6 +222,11 @@ func (rt *Router) txLoop() {
 			// Sniff slow-data for DPRS sentences before forwarding.
 			for _, sentence := range rt.dprsDec.Feed(frm.SlowData, frm.Seq) {
 				rt.handleDPRSSentence(sentence)
+			}
+			// Replace slow data with our text message so reflector
+			// dashboards and ircDDB show it as the "User Message".
+			if rt.cfg.TXText != "" {
+				frm.SlowData = rt.txText[frm.Seq%(dstar.MaxSeq+1)]
 			}
 			if frm.End {
 				log.Printf("router: TX end-of-stream (seq=%d, total frames=%d)", frm.Seq, rt.txFrameCount)

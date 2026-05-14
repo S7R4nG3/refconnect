@@ -5,7 +5,7 @@ func Default() *Config {
 	return &Config{
 		Version:        1,
 		Callsign:       "N0CALL",
-		CallsignSuffix: "G",
+		CallsignSuffix: "D",
 		Radio: RadioConfig{
 			Port:     "/dev/ttyUSB0",
 			Protocol: "DV-GW",

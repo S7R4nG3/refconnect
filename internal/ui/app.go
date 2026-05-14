@@ -56,6 +56,18 @@ type App struct {
 	// wake prevents the host from sleeping while a reflector link is up.
 	// Held between connect() and disconnect().
 	wake wakelock.Lock
+
+	theme *refconnectTheme
+}
+
+// setThemeMode swaps the UI between light and dark, persists the choice in
+// the config, and forces Fyne to repaint with the new variant.
+func (a *App) setThemeMode(mode string) {
+	a.cfg.UI.Theme = mode
+	if a.theme != nil {
+		a.theme.setVariant(mode)
+		a.fyneApp.Settings().SetTheme(a.theme)
+	}
 }
 
 // Run initialises the application and blocks until the window is closed.
@@ -91,7 +103,8 @@ func Run(cfg *config.Config) {
 		}))
 	})
 
-	a.fyneApp.Settings().SetTheme(&refconnectTheme{})
+	a.theme = newRefconnectTheme(cfg.UI.Theme)
+	a.fyneApp.Settings().SetTheme(a.theme)
 
 	a.win = a.fyneApp.NewWindow("RefConnect — D-STAR Reflector Client")
 	a.win.SetIcon(resourceAntennaPng)
@@ -362,7 +375,7 @@ func (a *App) sendBeacon() {
 	// Announce the beacon header to ircDDB so it appears in routing tables
 	// and Last Heard pages.
 	if a.irc != nil {
-		a.irc.AnnounceUser(hdr)
+		a.irc.AnnounceUser(hdr, "")
 		log.Printf("aprs: ircDDB AnnounceUser sent")
 	}
 	// Forward the position report to APRS-IS so it appears on aprs.fi.
@@ -437,6 +450,7 @@ func (a *App) startRouter() {
 		MyCall:                 myCall,
 		ReflectorModule:        a.reflectorModule,
 		ReflectorCall:          a.reflectorCall,
+		TXText:                 "RefConnect by KR4GCQ",
 	})
 	a.rt = rt
 	rt.Start()
@@ -466,7 +480,7 @@ func (a *App) startRouter() {
 					if evt.Direction == router.DirTX {
 						dir = "TX"
 						if a.irc != nil {
-							a.irc.AnnounceUser(*evt.Header)
+							a.irc.AnnounceUser(*evt.Header, "RefConnect by KR4GCQ")
 						}
 					}
 					a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))

@@ -38,6 +38,35 @@ func reflectorTypeByPrefix(prefix string) reflectorType {
 	return reflectorTypes[0] // default to XRF/DExtra
 }
 
+// parseEntry splits a saved reflector entry back into the UI field values
+// (type prefix, ID, domain, module). Returns empty prefix if Name does not
+// match any known reflector family.
+func parseEntry(e config.ReflectorEntry) (prefix, id, domain, module string) {
+	name := strings.ToUpper(strings.TrimSpace(e.Name))
+	for _, rt := range reflectorTypes {
+		if strings.HasPrefix(name, rt.prefix) {
+			prefix = rt.prefix
+			parts := strings.Fields(strings.TrimPrefix(name, rt.prefix))
+			if len(parts) > 0 {
+				id = parts[0]
+			}
+			break
+		}
+	}
+	if prefix == "" {
+		return "", "", "", ""
+	}
+	host := strings.ToLower(e.Host)
+	head := strings.ToLower(prefix) + strings.ToLower(id) + "."
+	if strings.HasPrefix(host, head) {
+		domain = host[len(head):]
+	} else {
+		domain = host
+	}
+	module = e.Module
+	return prefix, id, domain, module
+}
+
 // buildConnectPanel returns the reflector connection controls.
 func buildConnectPanel(a *App) fyne.CanvasObject {
 	modules := make([]string, 26)
@@ -106,39 +135,137 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	}
 	suffixSelect := widget.NewSelect(suffixOptions, nil)
 	suffixSelect.SetSelected(a.cfg.CallsignSuffix)
-	if suffixSelect.Selected == "" {
-		suffixSelect.SetSelected(" ")
+	if suffixSelect.Selected == "" || suffixSelect.Selected == " " {
+		suffixSelect.SetSelected("D")
 	}
 
 	callsignEntry := widget.NewEntry()
 	callsignEntry.SetText(a.cfg.Callsign)
 	callsignEntry.SetPlaceHolder("N0CALL")
 
-	// Pre-fill from the first saved profile if available.
-	if len(a.cfg.Reflectors) > 0 {
-		r := a.cfg.Reflectors[0]
-		for _, rt := range reflectorTypes {
-			if strings.HasPrefix(strings.ToUpper(r.Name), rt.prefix) {
-				typeSelect.SetSelected(rt.prefix)
-				selectedType = rt
-				break
-			}
+	// captureEntry produces a ReflectorEntry from the current UI fields.
+	captureEntry := func() (config.ReflectorEntry, bool) {
+		id := strings.TrimSpace(idEntry.Text)
+		module := moduleSelect.Selected
+		if id == "" || module == "" {
+			return config.ReflectorEntry{}, false
 		}
-		name := strings.ToUpper(strings.TrimSpace(r.Name))
-		for _, rt := range reflectorTypes {
-			if strings.HasPrefix(name, rt.prefix) {
-				parts := strings.Fields(strings.TrimPrefix(name, rt.prefix))
-				if len(parts) > 0 {
-					currentID = parts[0]
-					idEntry.SetText(currentID)
-				}
-				break
-			}
+		host := fmt.Sprintf("%s%s.%s",
+			strings.ToLower(selectedType.prefix),
+			strings.ToLower(id),
+			strings.TrimSpace(domainEntry.Text),
+		)
+		name := fmt.Sprintf("%s%s %s", selectedType.prefix, strings.ToUpper(id), module)
+		return config.ReflectorEntry{
+			Name:     name,
+			Host:     host,
+			Port:     selectedType.port,
+			Module:   module,
+			Protocol: string(selectedType.proto),
+		}, true
+	}
+
+	profileNames := func() []string {
+		names := make([]string, len(a.cfg.Reflectors))
+		for i, r := range a.cfg.Reflectors {
+			names[i] = r.Name
 		}
-		moduleSelect.SetSelected(r.Module)
+		return names
+	}
+
+	profileSelect := widget.NewSelect(profileNames(), nil)
+	profileSelect.PlaceHolder = "(none)"
+	loadProfile := func(name string) {
+		for _, r := range a.cfg.Reflectors {
+			if r.Name != name {
+				continue
+			}
+			p, id, dom, mod := parseEntry(r)
+			if p == "" {
+				return
+			}
+			typeSelect.SetSelected(p)
+			selectedType = reflectorTypeByPrefix(p)
+			idEntry.SetText(id)
+			domainEntry.SetText(dom)
+			moduleSelect.SetSelected(mod)
+			updateHost()
+			return
+		}
+	}
+	profileSelect.OnChanged = loadProfile
+
+	// Select initial profile: prefer LastUsedReflector, fall back to first entry.
+	initialProfile := ""
+	for _, r := range a.cfg.Reflectors {
+		if r.Name == a.cfg.LastUsedReflector {
+			initialProfile = r.Name
+			break
+		}
+	}
+	if initialProfile == "" && len(a.cfg.Reflectors) > 0 {
+		initialProfile = a.cfg.Reflectors[0].Name
+	}
+	if initialProfile != "" {
+		profileSelect.SetSelected(initialProfile)
 	}
 
 	updateHost()
+
+	saveBtn := widget.NewButton("Save profile", func() {
+		e, ok := captureEntry()
+		if !ok {
+			a.appendLog("Enter an ID and module before saving.")
+			return
+		}
+		updated := false
+		for i, r := range a.cfg.Reflectors {
+			if r.Name == e.Name {
+				a.cfg.Reflectors[i] = e
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			a.cfg.Reflectors = append(a.cfg.Reflectors, e)
+		}
+		if err := config.Save(a.cfg); err != nil {
+			a.appendLog("Save failed: " + err.Error())
+			return
+		}
+		profileSelect.Options = profileNames()
+		profileSelect.Refresh()
+		profileSelect.SetSelected(e.Name)
+		if updated {
+			a.appendLog("Profile updated: " + e.Name)
+		} else {
+			a.appendLog("Profile saved: " + e.Name)
+		}
+	})
+
+	deleteBtn := widget.NewButton("Delete profile", func() {
+		name := profileSelect.Selected
+		if name == "" {
+			return
+		}
+		for i, r := range a.cfg.Reflectors {
+			if r.Name == name {
+				a.cfg.Reflectors = append(a.cfg.Reflectors[:i], a.cfg.Reflectors[i+1:]...)
+				break
+			}
+		}
+		if a.cfg.LastUsedReflector == name {
+			a.cfg.LastUsedReflector = ""
+		}
+		if err := config.Save(a.cfg); err != nil {
+			a.appendLog("Save failed: " + err.Error())
+			return
+		}
+		profileSelect.Options = profileNames()
+		profileSelect.ClearSelected()
+		profileSelect.Refresh()
+		a.appendLog("Profile deleted: " + name)
+	})
 
 	var connected atomic.Bool
 	toggleBtn := widget.NewButton("Connect", nil)
@@ -173,19 +300,14 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		a.cfg.Callsign = strings.TrimSpace(callsignEntry.Text)
 		a.cfg.CallsignSuffix = suffixSelect.Selected
 
-		host := fmt.Sprintf("%s%s.%s",
-			strings.ToLower(selectedType.prefix),
-			strings.ToLower(id),
-			strings.TrimSpace(domainEntry.Text),
-		)
-		name := fmt.Sprintf("%s%s %s", selectedType.prefix, strings.ToUpper(id), module)
-
-		entry := config.ReflectorEntry{
-			Name:     name,
-			Host:     host,
-			Port:     selectedType.port,
-			Module:   module,
-			Protocol: string(selectedType.proto),
+		entry, ok := captureEntry()
+		if !ok {
+			a.appendLog("Please complete reflector fields before connecting.")
+			return
+		}
+		a.cfg.LastUsedReflector = entry.Name
+		if err := config.Save(a.cfg); err != nil {
+			a.appendLog("Config save failed: " + err.Error())
 		}
 
 		toggleBtn.Disable()
@@ -207,6 +329,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	return container.NewVBox(
 		widget.NewLabel("Reflector"),
 		container.NewGridWithColumns(2,
+			widget.NewLabel("Profile:"), profileSelect,
 			widget.NewLabel("Type:"), typeSelect,
 			widget.NewLabel("ID:"), idEntry,
 			widget.NewLabel("Domain:"), domainEntry,
@@ -214,6 +337,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			widget.NewLabel("Module:"), moduleSelect,
 			widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
 		),
+		container.NewGridWithColumns(2, saveBtn, deleteBtn),
 		toggleBtn,
 	)
 }

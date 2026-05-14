@@ -75,3 +75,40 @@ func NullSlowData(seq uint8) [3]byte {
 	}
 	return ScrambleSlowData([3]byte{0x00, 0x00, 0x00}, s)
 }
+
+// EncodeTextMessage encodes a D-STAR slow data text message (up to 20
+// characters) into a full superframe of pre-scrambled slow data triplets.
+// The returned array is indexed by frame sequence number (0–20):
+//
+//	Frame 0:   sync pattern
+//	Frames 1–8: 4 text blocks (type 0x40–0x43), 2 frames per block
+//	Frames 9–20: null filler
+//
+// Each block carries 5 characters preceded by a type byte (0x40 | blockNum),
+// matching the D-STAR "short message" encoding used by BlueDV and other
+// dongle clients. Messages shorter than 20 characters are right-padded
+// with spaces.
+func EncodeTextMessage(msg string) [MaxSeq + 1][3]byte {
+	var padded [20]byte
+	for i := range padded {
+		padded[i] = ' '
+	}
+	copy(padded[:], msg)
+
+	var frames [MaxSeq + 1][3]byte
+	frames[0] = SyncSlowData
+
+	for block := 0; block < 4; block++ {
+		off := block * 5
+		tag := byte(0x40) | byte(block)
+		f1 := uint8(1 + block*2)
+		f2 := f1 + 1
+		frames[f1] = ScrambleSlowData([3]byte{tag, padded[off], padded[off+1]}, f1)
+		frames[f2] = ScrambleSlowData([3]byte{padded[off+2], padded[off+3], padded[off+4]}, f2)
+	}
+
+	for i := 9; i <= MaxSeq; i++ {
+		frames[i] = NullSlowData(uint8(i))
+	}
+	return frames
+}

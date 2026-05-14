@@ -52,7 +52,17 @@ func buildMainWindow(a *App) fyne.CanvasObject {
 		widget.NewHyperlink("KR4GCQ", qrzURL),
 		ghBtn,
 	))
-	footer := container.NewBorder(nil, nil, nil, logToggleBtn, centeredNotice)
+
+	darkSwitch := newToggleSwitch(a.cfg.UI.Theme == "dark", func(on bool) {
+		if on {
+			a.setThemeMode("dark")
+		} else {
+			a.setThemeMode("light")
+		}
+	})
+	darkControls := container.NewHBox(widget.NewLabel("Dark mode"), darkSwitch)
+
+	footer := container.NewBorder(nil, nil, darkControls, logToggleBtn, centeredNotice)
 
 	return container.NewBorder(nil, container.NewVBox(logContent, footer), nil, nil, top)
 }

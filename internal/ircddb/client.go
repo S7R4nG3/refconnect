@@ -76,6 +76,9 @@ type Client struct {
 	stopMu       sync.Mutex
 	stopCh       chan struct{}
 	registeredCh chan struct{} // closed once StateRegistered is first reached
+
+	serverMu   sync.Mutex
+	serverNick string // ircDDB server bot nick (e.g. "s-grp1s1"), discovered from NAMES
 }
 
 // New creates a Client for the given 8-char D-STAR gateway callsign.
@@ -153,28 +156,79 @@ func (c *Client) WaitRegistered(timeout time.Duration) bool {
 	}
 }
 
-// AnnounceUser sends a user-update PRIVMSG to #dstar announcing a D-STAR
-// transmission. The message is dropped silently if the client is not currently
-// registered or if the send buffer is full.
+// AnnounceUser sends an UPDATE PRIVMSG to the ircDDB server bot announcing
+// a D-STAR transmission. The message is dropped silently if the client is
+// not currently registered, no server bot has been discovered, or the send
+// buffer is full.
 //
-// ircDDB user-update format:
+// txText is the 20-char slow data text message (e.g. "RefConnect by KR4GCQ").
+// Pass "" to omit the text field.
 //
-//	PRIVMSG #dstar :@U <mycall8> <rpt1-8> <rpt2-8> <urcall8>
-func (c *Client) AnnounceUser(hdr dstar.DVHeader) {
+// ircDDB UPDATE format (sent to server bot, not #dstar):
+//
+//	PRIVMSG <server-nick> :UPDATE <date> <time> <mycall8> <rpt1-8> 0 <rpt2-8> <urcall8> <f1> <f2> <f3> <ext4> [00 <dest8> <tx_msg20>]
+//
+// Callsign spaces are replaced with '_' per ircDDB convention.
+func (c *Client) AnnounceUser(hdr dstar.DVHeader, txText string) {
 	if State(c.state.Load()) != StateRegistered {
 		return
 	}
-	msg := fmt.Sprintf("PRIVMSG %s :@U %s %s %s %s",
-		gatewayChan,
-		dstar.PadCallsign(strings.TrimSpace(hdr.MyCall), 8),
-		dstar.PadCallsign(strings.TrimSpace(hdr.RPT1), 8),
-		dstar.PadCallsign(strings.TrimSpace(hdr.RPT2), 8),
-		dstar.PadCallsign(strings.TrimSpace(hdr.YourCall), 8),
+	c.serverMu.Lock()
+	bot := c.serverNick
+	c.serverMu.Unlock()
+	if bot == "" {
+		return
+	}
+
+	now := time.Now().UTC()
+	dateStr := now.Format("2006-01-02")
+	timeStr := now.Format("15:04:05")
+
+	myCall := ircSanitize(dstar.PadCallsign(strings.TrimSpace(hdr.MyCall), 8))
+	rpt1 := ircSanitize(dstar.PadCallsign(strings.TrimSpace(hdr.RPT1), 8))
+	rpt2 := ircSanitize(dstar.PadCallsign(strings.TrimSpace(hdr.RPT2), 8))
+	urCall := ircSanitize(dstar.PadCallsign(strings.TrimSpace(hdr.YourCall), 8))
+	ext := ircSanitize(dstar.PadCallsign(strings.TrimSpace(hdr.MyCallSuffix), 4))
+
+	msg := fmt.Sprintf("PRIVMSG %s :UPDATE %s %s %s %s 0 %s %s %02X %02X %02X %s",
+		bot, dateStr, timeStr,
+		myCall, rpt1, rpt2, urCall,
+		hdr.Flag1, hdr.Flag2, hdr.Flag3, ext,
 	)
+
+	if txText != "" {
+		padded := dstar.PadCallsign(txText, 20)
+		msg += fmt.Sprintf(" 00 %s %s", ircSanitize(rpt2), ircSanitizeText(padded))
+	}
+
 	select {
 	case c.sendCh <- msg:
 	default:
 	}
+}
+
+// ircSanitize replaces characters outside [A-Z0-9/] with '_' for ircDDB fields.
+func ircSanitize(s string) string {
+	b := []byte(s)
+	for i, ch := range b {
+		if (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '/' {
+			continue
+		}
+		b[i] = '_'
+	}
+	return string(b)
+}
+
+// ircSanitizeText replaces non-printable characters (outside ASCII 33-126) with '_'.
+func ircSanitizeText(s string) string {
+	b := []byte(s)
+	for i, ch := range b {
+		if ch > 32 && ch < 127 {
+			continue
+		}
+		b[i] = '_'
+	}
+	return string(b)
 }
 
 func (c *Client) setState(s State, msg string) {
@@ -319,6 +373,16 @@ func (c *Client) session(conn net.Conn, stop <-chan struct{}) error {
 			case "001": // RPL_WELCOME — now safe to join channels
 				if err := send("JOIN " + gatewayChan); err != nil {
 					return err
+				}
+			case "353": // RPL_NAMREPLY — scan for server bot nick (@s-...)
+				for _, name := range parts[3:] {
+					if strings.HasPrefix(name, "@s-") {
+						bot := name[1:] // strip '@' prefix
+						c.serverMu.Lock()
+						c.serverNick = bot
+						c.serverMu.Unlock()
+						log.Printf("ircddb: discovered server bot: %s", bot)
+					}
 				}
 			case "376", "422": // RPL_ENDOFMOTD / ERR_NOMOTD
 				if !joined {
