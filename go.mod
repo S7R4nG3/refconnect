@@ -1,17 +1,16 @@
 module github.com/S7R4nG3/refconnect
 
-go 1.26
+go 1.26.0
 
 require (
 	fyne.io/fyne/v2 v2.7.4
-	go.bug.st/serial v1.6.4
+	go.bug.st/serial v1.7.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	fyne.io/systray v1.12.1 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
-	github.com/creack/goselect v0.1.3 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fredbi/uri v1.1.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
