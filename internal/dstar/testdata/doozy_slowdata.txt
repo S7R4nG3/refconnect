@@ -1,0 +1,37 @@
+# Ground-truth D-STAR slow-data superframe extracted from pcaps/doozy-cap.pcapng
+# (IC-705, MYCALL=KR4GCQ) over the DV Gateway Terminal protocol.
+#
+# Each DV voice frame carries 3 slow-data bytes; one superframe = 21 frames.
+# Frame 0 is the unscrambled sync pattern (55 2D 16); frames 1-20 are scrambled
+# with the fixed 3-byte key 70 4F 93 (see slowdata.go). Descrambling and
+# reassembling the 6-byte segments yields the D-STAR header/callsign data:
+#   RPT2=DIRECT  RPT1=DIRECT  URCALL=CQCQCQ  MYCALL=KR4GCQ  suffix=705
+#
+# This superframe repeats identically across the capture (static station).
+# Format: "<seq>: <b0> <b1> <b2>"  (hex, wire order, as received)
+#
+# Re-extract with:
+#   tshark -r pcaps/doozy-cap.pcapng \
+#     -Y 'usb.endpoint_address==0x85 && usb.data_len==17' -x
+# then take the last 17 bytes of each frame; slow data = bytes [13:16].
+ 0: 55 2D 16
+ 1: 25 4F 93
+ 2: 70 0B DA
+ 3: 25 1D D6
+ 4: 33 1B B3
+ 5: 25 6F D7
+ 6: 39 1D D6
+ 7: 25 0C C7
+ 8: 50 6F D0
+ 9: 25 1E D0
+10: 21 0C C2
+11: 25 6F B3
+12: 3B 1D A7
+13: 25 08 D0
+14: 21 6F B3
+15: 25 78 A3
+16: 45 6F F5
+17: 21 6D F5
+18: 16 29 F5
+19: 16 29 F5
+20: 16 29 F5

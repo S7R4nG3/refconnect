@@ -96,7 +96,14 @@ func Run(cfg *config.Config) {
 			on, _ := a.aprsEnabled.Get()
 			a.cfg.APRS.Enabled = on
 			if on {
-				a.startAPRS()
+				// Only start the beacon loop if a reflector is already linked
+				// (e.g. the user toggled APRS on mid-session). At app startup
+				// nothing is connected yet, so starting here would fire the
+				// send_on_connect beacon before a router exists and abort it;
+				// connect() starts the loop once the reflector is up instead.
+				if a.reflector != nil && a.reflector.State() == protocol.StateConnected {
+					a.startAPRS()
+				}
 			} else {
 				a.stopAPRS()
 			}
@@ -270,7 +277,8 @@ func (a *App) disconnect() {
 }
 
 // startAPRS begins a goroutine that sends a DPRS beacon on connect (if
-// configured) and thereafter on a ticker. It is idempotent.
+// configured), on the periodic interval, and promptly whenever a fresh GPS
+// fix arrives from the radio. It is idempotent.
 func (a *App) startAPRS() {
 	a.aprsMu.Lock()
 	defer a.aprsMu.Unlock()
@@ -292,23 +300,53 @@ func (a *App) startAPRS() {
 	}
 
 	go func() {
+		// The radio only caches a GPS fix while the user is transmitting, so a
+		// fix typically lands mid-interval. Rather than wait up to a full
+		// interval (and risk the app closing first), poll frequently and beacon
+		// as soon as a new fix appears — throttled by minFixGap so a long
+		// transmission (which re-caches a fix every superframe) can't spam
+		// APRS-IS. The periodic interval still fires for static/unchanged fixes.
+		const pollInterval = 15 * time.Second
+		const minFixGap = 60 * time.Second
+
+		var lastSentAt time.Time // when we last beaconed
+		var lastFixAt time.Time  // Cache.updated of the fix we last beaconed
+
 		if sendOnConnect {
-			// Delay slightly so the link settles before the first beacon.
+			// Let the link settle before the first (static/available) beacon.
 			select {
 			case <-stop:
 				return
 			case <-time.After(5 * time.Second):
-				a.sendBeacon()
 			}
+		} else {
+			// Suppress the initial beacon; the periodic path waits a full
+			// interval. A fresh radio fix can still trigger sooner, below.
+			lastSentAt = time.Now()
 		}
-		t := time.NewTicker(interval)
-		defer t.Stop()
+
+		poll := time.NewTicker(pollInterval)
+		defer poll.Stop()
 		for {
+			if rt := a.rt; rt != nil {
+				_, fixAt, hasFix := rt.GPS().Get()
+				now := time.Now()
+				newFix := hasFix && fixAt.After(lastFixAt)
+				havePosition := hasFix || a.cfg.APRS.HasStaticPosition()
+				// Fresh radio fix (throttled), or the periodic interval elapsed.
+				if (newFix && now.Sub(lastSentAt) >= minFixGap) ||
+					(havePosition && now.Sub(lastSentAt) >= interval) {
+					a.sendBeacon()
+					lastSentAt = now
+					if hasFix {
+						lastFixAt = fixAt
+					}
+				}
+			}
 			select {
 			case <-stop:
 				return
-			case <-t.C:
-				a.sendBeacon()
+			case <-poll.C:
 			}
 		}
 	}()

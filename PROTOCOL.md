@@ -204,23 +204,53 @@ Each frame carries 9 bytes of AMBE+2 compressed audio and 3 bytes of slow data. 
 
 ### 3.3 Slow Data
 
-Three bytes of slow data are carried in every voice frame. Over 20 frames (one "superframe"), 60 bytes accumulate. Each byte is XOR'd with a scrambling sequence before transmission.
+A superframe is **21 voice frames**: frame `seq 0` carries the unscrambled sync
+pattern `55 2D 16`; frames `seq 1–20` each carry 3 scrambled slow-data bytes (60
+bytes total per superframe). Slow data forms a byte stream of 6-byte segments
+(`[type/length header][5 data]`, each spanning two voice frames). Each byte is
+XOR'd with a scrambling key before transmission.
 
-**Scrambler table** (20 bytes, indexed by `seq % 20`):
-```
-70 4F 93 40 64 74 6D 30 2B 2B BE CC 9E 50 00 7F D5 97 D7 22
-```
+**Scrambler (VERIFIED 2026-07-12):** a fixed **3-byte key `70 4F 93`, repeated on
+every non-sync frame** (each frame's 3 bytes are XOR'd with `70 4F 93`; the sync
+frame `seq 0` is never scrambled). It is *not* a per-position table. Implemented
+in `internal/dstar/slowdata.go` (`scramblerKey`).
 
-Each 3-byte slow-data field uses positions `[seq%20]`, `[(seq+1)%20]`, `[(seq+2)%20]` of the table. Scrambling is self-inverse (same XOR for encode and decode).
+Verified by descrambling full superframes from `pcaps/doozy-cap.pcapng` and
+`pcaps/radio-comm.pcapng`: the recovered 6-byte segments are the D-STAR
+header/callsign type (`0x5n`) and reassemble to the exact routing the radio
+sent — `RPT2/RPT1 = DIRECT`, `URCALL = CQCQCQ`, `MYCALL = KR4GCQ`. Regression
+fixture + test: `internal/dstar/testdata/doozy_slowdata.txt` and
+`TestDescrambleRealSlowData`.
 
-**Slow data types** (first unscrambled byte of a block):
+> **Historical note:** earlier revisions used a 60-byte per-position table (and
+> GPS.md analysis assumed the `0x25`-prefixed frames were `0x3n` GPS segments).
+> Both were wrong: `0x55` header-segment bytes XOR `0x70` = `0x25`, so those
+> frames are header (`0x5n`) segments, not GPS. The correct key matched only the
+> first frame of the old table (`70 4F 93`), which is why prior brute-force
+> searches — scored for `$$CRC`/`APDPRS` GPS content — missed it on captures
+> that actually carried the callsign header.
+
+> **Not yet confirmed on-air:** the captures on hand carry header slow-data, not
+> a D-PRS `$$CRC` GPS sentence, so live radio-GPS decode still needs a keyed-up
+> test with GPS TX enabled (GPS.md Phase 5). The encode/decode framing round-trips
+> in tests, so outbound beacons are now wire-correct.
+
+**Slow data types** (high nibble of the first unscrambled byte of a segment; low
+nibble is a length/block field):
 | Type | Meaning |
 |------|---------|
-| 0x30 | GPS/DPRS |
-| 0x43 | Short text message |
-| 0x00 | Null/filler |
+| 0x3n | GPS / D-PRS |
+| 0x4n | Short text message (e.g. `0x40`&#124;block; `0x43` = block 3 / len 3) |
+| 0x5n | Header / callsign data |
+| 0x0n | Null / filler |
 
-**Sending null slow data:** XOR `{0x00, 0x00, 0x00}` with the scrambler for the given seq.
+**D-PRS `$$CRC` checksum:** CRC-CCITT (same algorithm as the header CRC in §3.4,
+`dstar.CRC16CCITT`), **not** a byte-sum. This was corrected in
+`internal/aprs/dprs.go`.
+
+**Note:** the scrambler is used for both decode and *encode*. With the key now
+verified, RefConnect's outbound beacon / `TXText` slow data is scrambled
+wire-correctly and is readable by other stations.
 
 ### 3.4 D-STAR Header CRC
 

@@ -3,21 +3,24 @@ package aprs
 import (
 	"fmt"
 	"strings"
+
+	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
 
-// dprsCRC computes the CRC field used in a DPRS "$$CRC" sentence.
-// Algorithm: sum all bytes mod 65536. Many D-STAR gateways (ircDDBGateway,
-// XLX, G4KLX) accept this simple 16-bit sum; it was chosen by Icom for
-// its trivial implementation on the IC-9x00 series.
+// dprsCRC computes the checksum for the DPRS "$$CRC" sentence. D-PRS uses the
+// reflected CRC-CCITT (the same algorithm as the D-STAR header/slow-data CRC),
+// NOT a byte-sum — reflectors and ircDDBGateway that validate the checksum
+// drop sentences whose CRC doesn't match, which is why byte-sum beacons never
+// reached the reflector even though the raw TNC2 packet reached APRS-IS.
 //
-// Input is the text between the leading "," and the trailing "\r" —
-// i.e. just the APRS TNC2 payload.
+// The CRC covers the TNC2 payload PLUS the terminating "\r". This was confirmed
+// on-air against an IC-705 D-PRS sentence
+// ("$$CRCD247,KR4GCQ>API705,DSTAR*:!3513.91N/08051.27W[/\r"): CRC16CCITT over
+// the body alone gave 0x251E, but over body+"\r" it gave 0xD247, matching the
+// radio. Callers pass the payload without the trailing CR; this function adds
+// it for the checksum.
 func dprsCRC(payload string) uint16 {
-	var sum uint16
-	for i := 0; i < len(payload); i++ {
-		sum += uint16(payload[i])
-	}
-	return sum
+	return dstar.CRC16CCITT([]byte(payload + "\r"))
 }
 
 // WrapDPRS produces a full DPRS sentence suitable for injection into the

@@ -29,3 +29,12 @@ func crc16CCITT(data []byte) uint16 {
 	}
 	return ^crc
 }
+
+// CRC16CCITT exposes the reflected CRC-CCITT (poly 0x8408, init 0xFFFF, final
+// XOR 0xFFFF) used throughout D-STAR — the header CRC and the D-PRS "$$CRC"
+// slow-data checksum share this algorithm. The aprs package uses it to frame
+// DPRS position sentences so reflectors/gateways that validate the checksum
+// accept them.
+func CRC16CCITT(data []byte) uint16 {
+	return crc16CCITT(data)
+}

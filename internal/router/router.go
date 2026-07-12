@@ -213,11 +213,27 @@ func (rt *Router) txLoop() {
 				return
 			}
 			if rt.cfg.DropTXWhenDisconnected && rt.reflector.State() != protocol.StateConnected {
+				// Link went down mid-transmission: drop this frame, but still
+				// release the TX claim at end-of-stream. Otherwise txMu stays
+				// locked forever and every subsequent SendBeacon blocks.
+				if frm.End && rt.txBusy {
+					rt.txFrameCount = 0
+					rt.txMu.Unlock()
+					rt.txBusy = false
+				}
 				continue
 			}
 			rt.txFrameCount++
 			if rt.txFrameCount == 1 {
 				log.Printf("router: first TX voice frame (seq=%d)", frm.Seq)
+			}
+			// Diagnostic: dump the raw slow-data bytes for the first superframe
+			// of each transmission. The scrambler in dstar/slowdata.go is now
+			// verified against the ground-truth pcaps (key 70 4F 93), so decode
+			// below should work; keep this log until radio GPS is confirmed
+			// on-air, then gate it behind a debug flag or remove (see GPS.md).
+			if rt.txFrameCount <= dstar.MaxSeq+1 {
+				log.Printf("router: TX slow-data seq=%2d raw=% 02X", frm.Seq, frm.SlowData)
 			}
 			// Sniff slow-data for DPRS sentences before forwarding.
 			for _, sentence := range rt.dprsDec.Feed(frm.SlowData, frm.Seq) {
@@ -253,14 +269,17 @@ func (rt *Router) txLoop() {
 // handleDPRSSentence validates a slow-data DPRS sentence, parses the
 // embedded position if possible, and updates the GPS cache.
 func (rt *Router) handleDPRSSentence(sentence string) {
+	log.Printf("router: DPRS candidate sentence: %q", sentence)
 	payload, ok := aprs.ValidateDPRS(sentence)
 	if !ok {
 		// Accept NMEA-only sentences too — some radios emit raw $GPRMC/$GPGGA
 		// without the $$CRC wrapper.
+		log.Printf("router: DPRS $$CRC framing/checksum not valid — trying raw payload as NMEA/TNC2")
 		payload = sentence
 	}
 	pos, ok := aprs.ParsePosition(payload)
 	if !ok {
+		log.Printf("router: DPRS position parse failed for %q", payload)
 		return
 	}
 	rt.gps.Set(pos)

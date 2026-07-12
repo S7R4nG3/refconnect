@@ -44,6 +44,22 @@ func TestDPRSRoundTrip(t *testing.T) {
 	}
 }
 
+// TestValidateDPRSRealRadioSentence pins the D-PRS CRC to a real IC-705
+// sentence captured on-air (2026-07-12). The radio's CRC (0xD247) is computed
+// over the payload including the trailing "\r"; validating without the CR
+// (0x251E) is the bug this guards against.
+func TestValidateDPRSRealRadioSentence(t *testing.T) {
+	sentence := "$$CRCD247,KR4GCQ>API705,DSTAR*:!3513.91N/08051.27W[/\r"
+	got, ok := ValidateDPRS(sentence)
+	if !ok {
+		t.Fatalf("ValidateDPRS rejected real IC-705 sentence: %q", sentence)
+	}
+	want := "KR4GCQ>API705,DSTAR*:!3513.91N/08051.27W[/"
+	if got != want {
+		t.Errorf("payload = %q, want %q", got, want)
+	}
+}
+
 func TestValidateDPRSBadCRC(t *testing.T) {
 	// Flip a byte in the body — CRC should no longer match.
 	bad := "$$CRC0000,KR4GCQ-1>APDPRS,DSTAR*:!3340.00N/08425.00W>RefConnect\r"
