@@ -85,12 +85,31 @@ type DPRSDecoder struct {
 // Feed processes one frame's worth of scrambled slow data. It returns any
 // complete DPRS sentences that finished as a result of this frame; zero,
 // one, or occasionally more sentences may be returned per call.
+//
+// The decoder self-synchronizes on the D-STAR sync triplet (55 2D 16, sent
+// unscrambled every 21 frames) rather than trusting the caller's seq. This
+// matters for the MMDVM path (Kenwood TH-D75): unlike the Icom DV-Gateway
+// protocol, MMDVM data frames carry no inline seq, so the radio package has to
+// synthesize one by counting frames — a count that drifts permanently if a
+// single frame is dropped or the first frame after the header isn't the sync
+// frame. Locking onto the literal sync pattern instead makes decode immune to
+// that drift (it's what G4KLX MMDVMHost does) and is a no-op for the IC-705,
+// whose seq is already authoritative. The seq argument is now only a hint.
 func (d *DPRSDecoder) Feed(scrambled [3]byte, seq uint8) []string {
-	// Skip sync frames — they carry the sync pattern, not GPS data.
-	if seq%21 == 0 {
+	// Sync frame: realign the segment pairing to the superframe boundary. The
+	// sync triplet is transmitted unscrambled, so it's self-identifying — the
+	// next non-sync frame is the first half of a fresh 6-byte segment.
+	if scrambled == SyncSlowData {
+		d.haveHalf = false
 		return nil
 	}
-	unscrambled := ScrambleSlowData(scrambled, seq)
+	// Descramble with a constant non-sync seq. The scrambler key is a fixed
+	// triplet repeated on every non-sync frame, so the seq value is irrelevant
+	// here — and deliberately NOT used: a drifted MMDVM seq that landed on a
+	// multiple of 21 would otherwise make ScrambleSlowData pass a real data
+	// frame through unchanged (its sync short-circuit), corrupting the segment.
+	// Sync frames are already handled above by their self-identifying pattern.
+	unscrambled := ScrambleSlowData(scrambled, 1)
 	if !d.haveHalf {
 		d.halfSeg = unscrambled
 		d.haveHalf = true

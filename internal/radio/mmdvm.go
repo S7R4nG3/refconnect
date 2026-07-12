@@ -448,9 +448,20 @@ func (m *MMDVMRadio) readLoop() {
 				log.Printf("mmdvm: D-STAR voice frame too short (%d bytes)", len(frm.payload))
 				continue
 			}
-			f := dstar.DVFrame{Seq: dstarSeq}
+			var slow [3]byte
+			copy(slow[:], frm.payload[9:12])
+			// Re-sync the synthesized counter on the D-STAR sync triplet
+			// (55 2D 16, sent unscrambled every 21 frames). MMDVM data frames
+			// carry no inline seq, so counting from the header alone drifts
+			// permanently if any frame is dropped or the first frame isn't the
+			// sync frame. Locking onto the self-identifying sync pattern keeps
+			// DVFrame.Seq honest for downstream consumers. (The DPRS decoder
+			// self-syncs the same way and no longer relies on this seq.)
+			if slow == dstar.SyncSlowData {
+				dstarSeq = 0
+			}
+			f := dstar.DVFrame{Seq: dstarSeq, SlowData: slow}
 			copy(f.AMBE[:], frm.payload[:9])
-			copy(f.SlowData[:], frm.payload[9:12])
 			dstarSeq = (dstarSeq + 1) % (dstar.MaxSeq + 1)
 			m.frmCh <- f
 
