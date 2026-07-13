@@ -10,7 +10,7 @@ import (
 )
 
 // loadSlowDataFixture parses a "<seq>: <b0> <b1> <b2>" fixture (see
-// testdata/doozy_slowdata.txt) into an array indexed by sequence number.
+// testdata/slowdata.txt) into an array indexed by sequence number.
 func loadSlowDataFixture(t *testing.T, name string) [MaxSeq + 1][3]byte {
 	t.Helper()
 	f, err := os.Open(filepath.Join("testdata", name))
@@ -70,7 +70,7 @@ func loadSlowDataFixture(t *testing.T, name string) [MaxSeq + 1][3]byte {
 // against the wire. A wrong scrambler (e.g. the old per-position table) yields
 // garbage here.
 func TestDescrambleRealSlowData(t *testing.T) {
-	frames := loadSlowDataFixture(t, "doozy_slowdata.txt")
+	frames := loadSlowDataFixture(t, "slowdata.txt")
 
 	// Sync frame must be the literal, unscrambled sync pattern.
 	if frames[0] != SyncSlowData {
@@ -106,7 +106,7 @@ func TestDescrambleRealSlowData(t *testing.T) {
 // the exact ground-truth bytes, so an accidental revert to a per-position
 // table (which matched only frame 1) still fails on frames beyond it.
 func TestScramblerKeyExactBytes(t *testing.T) {
-	frames := loadSlowDataFixture(t, "doozy_slowdata.txt")
+	frames := loadSlowDataFixture(t, "slowdata.txt")
 
 	// Frame 2 on the wire is 70 0B DA; with key 70 4F 93 it descrambles to
 	// 00 44 49 (the "\0DI" straddling the first header segment's data). The

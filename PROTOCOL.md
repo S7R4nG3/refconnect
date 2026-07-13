@@ -219,7 +219,7 @@ Verified by descrambling full superframes from `pcaps/doozy-cap.pcapng` and
 `pcaps/radio-comm.pcapng`: the recovered 6-byte segments are the D-STAR
 header/callsign type (`0x5n`) and reassemble to the exact routing the radio
 sent — `RPT2/RPT1 = DIRECT`, `URCALL = CQCQCQ`, `MYCALL = KR4GCQ`. Regression
-fixture + test: `internal/dstar/testdata/doozy_slowdata.txt` and
+fixture + test: `internal/dstar/testdata/slowdata.txt` and
 `TestDescrambleRealSlowData`.
 
 > **Historical note:** earlier revisions used a 60-byte per-position table (and

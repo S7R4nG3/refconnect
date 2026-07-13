@@ -396,38 +396,29 @@ func (a *App) sendBeacon() {
 	if len(a.cfg.APRS.SymbolTable) > 0 {
 		symTable = a.cfg.APRS.SymbolTable[0]
 	}
-	symChar := byte('>')
+	// Default to the APRS "person" symbol (/[) when unset — RefConnect targets
+	// portable/handheld operators. Config Symbol/SymbolTable override it.
+	symChar := byte('[')
 	if len(a.cfg.APRS.Symbol) > 0 {
 		symChar = a.cfg.APRS.Symbol[0]
 	}
 	tnc2 := aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment)
 	log.Printf("aprs: TNC2 packet: %s", tnc2)
-	sentence := aprs.WrapDPRS(tnc2)
-	hdr, err := a.rt.SendBeacon(sentence)
-	if err != nil {
-		log.Printf("aprs: beacon send to reflector failed: %v", err)
-		a.appendLog("APRS beacon failed: " + err.Error())
-		return
-	}
-	log.Printf("aprs: beacon sent to reflector OK")
-	// Announce the beacon header to ircDDB so it appears in routing tables
-	// and Last Heard pages.
-	if a.irc != nil {
-		a.irc.AnnounceUser(hdr, "")
-		log.Printf("aprs: ircDDB AnnounceUser sent")
-	}
-	// Forward the position report to APRS-IS so it appears on aprs.fi.
+
+	// Position beacons are forwarded to APRS-IS (aprs.fi) only. They are
+	// intentionally NOT transmitted over the reflector: a reflector beacon is a
+	// separate D-STAR transmission that would show the operator a second time in
+	// the reflector's "Last Heard" (and ircDDB) right after each voice key-up.
 	if a.aprsIS == nil {
 		a.aprsIS = aprs.NewAPRSISClient(call, "RefConnect", "0.7.0")
 	}
 	if err := a.aprsIS.Send(tnc2); err != nil {
 		log.Printf("aprs: APRS-IS send failed: %v", err)
-		a.appendLog("APRS-IS: " + err.Error())
-	} else {
-		log.Printf("aprs: APRS-IS send OK")
-		a.appendLog("APRS-IS: position forwarded.")
+		a.appendLog("APRS-IS send failed: " + err.Error())
+		return
 	}
-	a.appendLog(fmt.Sprintf("APRS beacon sent (%.5f, %.5f).", pos.Lat, pos.Lon))
+	log.Printf("aprs: APRS-IS send OK")
+	a.appendLog(fmt.Sprintf("APRS position sent to aprs.fi (%.5f, %.5f).", pos.Lat, pos.Lon))
 }
 
 // openRadio opens the serial port for the radio.
