@@ -42,20 +42,65 @@ func (c *Cache) Get() (pos Position, updated time.Time, ok bool) {
 // Returns ok=false if no usable position is found.
 func ParsePosition(s string) (Position, bool) {
 	s = strings.TrimSpace(s)
-	switch {
-	case strings.HasPrefix(s, "$GPRMC"):
-		return parseRMC(s)
-	case strings.HasPrefix(s, "$GPGGA"):
-		return parseGGA(s)
+	// NMEA sentences. Match on the RMC/GGA suffix so any talker ID works
+	// ($GP, $GN, $GL, $GA, …), not just GPS.
+	if len(s) >= 6 && s[0] == '$' {
+		switch s[3:6] {
+		case "RMC":
+			return parseRMC(s)
+		case "GGA":
+			return parseGGA(s)
+		}
 	}
-	// Look for TNC2 APRS position anywhere in the payload. The data-type
-	// indicators that carry a bare lat/lon are '!', '=', '/', '@'.
+
+	// TNC2 APRS ("SOURCE>DEST,PATH:INFO") — the position is in the information
+	// field, which starts after the first ':'. Parse from there so a '/' or '='
+	// inside the callsign path or a "/A=" altitude extension can't be mistaken
+	// for the position indicator.
+	info := s
+	if _, after, found := strings.Cut(s, ":"); found {
+		info = after
+	}
+	if pos, ok := parseAPRSInfo(info); ok {
+		return pos, true
+	}
+
+	// Fallback: scan for a data-type indicator anywhere, for payloads that are
+	// already just the information field or use an unusual framing.
 	for _, ind := range []byte{'!', '=', '/', '@'} {
 		if i := strings.IndexByte(s, ind); i >= 0 {
-			if pos, ok := parseTNC2Position(s[i+1:]); ok {
+			if pos, ok := parseAPRSInfo(s[i:]); ok {
 				return pos, true
 			}
 		}
+	}
+	return Position{}, false
+}
+
+// parseAPRSInfo parses an APRS information field that begins with a data-type
+// indicator, returning the uncompressed lat/lon. The indicator determines
+// whether a 7-character timestamp precedes the position:
+//
+//	!LAT/LON…   position, no timestamp
+//	=LAT/LON…   position, no timestamp, with messaging
+//	/TTTTTTTz LAT/LON…   position WITH 7-char timestamp
+//	@TTTTTTTz LAT/LON…   position WITH 7-char timestamp, with messaging
+//
+// The IC-705 emits the '!' form; the TH-D75 emits the timestamped '/' form
+// (e.g. "/131335z3513.92N/08051.27W[…"), which is why skipping the timestamp
+// is required for the Kenwood to decode.
+func parseAPRSInfo(info string) (Position, bool) {
+	if info == "" {
+		return Position{}, false
+	}
+	switch info[0] {
+	case '!', '=':
+		return parseTNC2Position(info[1:])
+	case '/', '@':
+		if len(info) < 8 {
+			return Position{}, false
+		}
+		return parseTNC2Position(info[8:]) // skip indicator + 7-char timestamp
 	}
 	return Position{}, false
 }
