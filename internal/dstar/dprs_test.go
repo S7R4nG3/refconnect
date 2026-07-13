@@ -92,6 +92,28 @@ func TestDPRSDecoderSelfSyncsWithWrongSeq(t *testing.T) {
 	}
 }
 
+// TestDPRSDecoderExtractsRawNMEA covers a radio configured to embed plain
+// NMEA ("$GPRMC…") in the GPS slow-data segments rather than the D-PRS
+// "$$CRC…" form. Previously the decoder only searched for "$$CRC" and silently
+// discarded NMEA; it must now surface any "$…\r" sentence so the router's NMEA
+// fallback can parse the position.
+func TestDPRSDecoderExtractsRawNMEA(t *testing.T) {
+	nmea := "$GPRMC,123519,A,3513.91,N,08051.27,W,000.0,000.0,130726,,*1B\r"
+	frames := EncodeDPRSFrames(nmea, 0)
+
+	var dec DPRSDecoder
+	var got []string
+	seq := uint8(0)
+	for _, f := range frames {
+		got = append(got, dec.Feed(f, seq)...)
+		seq = (seq + 1) % (MaxSeq + 1)
+	}
+
+	if len(got) != 1 || got[0] != nmea {
+		t.Fatalf("raw NMEA extraction failed: got %#v, want [%q]", got, nmea)
+	}
+}
+
 func TestDPRSDecoderSkipsSyncFrames(t *testing.T) {
 	var dec DPRSDecoder
 	// Feeding a sync frame should not produce output or disrupt state.

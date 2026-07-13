@@ -141,7 +141,12 @@ func (d *DPRSDecoder) Feed(scrambled [3]byte, seq uint8) []string {
 func (d *DPRSDecoder) extractSentences() []string {
 	var out []string
 	for {
-		start := indexOf(d.buf, []byte("$$CRC"))
+		// A sentence starts at '$'. This covers both the D-PRS "$$CRC…" form
+		// and raw NMEA ("$GPRMC…"/"$GPGGA…") that some radios (e.g. a TH-D75
+		// set to the plain "GPS" sentence type rather than "GPS-A"/D-PRS)
+		// embed in slow data. handleDPRSSentence validates each: $$CRC via
+		// the CRC, otherwise it's tried as NMEA/TNC2.
+		start := indexByte(d.buf, '$', 0)
 		if start < 0 {
 			// No start marker — trim the buffer so it doesn't grow unbounded.
 			if len(d.buf) > 256 {
@@ -170,24 +175,6 @@ func (d *DPRSDecoder) Reset() {
 	d.halfSeg = [3]byte{}
 	d.haveHalf = false
 	d.buf = d.buf[:0]
-}
-
-// indexOf is a simple byte-slice search; avoids pulling in bytes.Index to
-// keep the dstar package dependency-free.
-func indexOf(haystack, needle []byte) int {
-	if len(needle) == 0 {
-		return 0
-	}
-outer:
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				continue outer
-			}
-		}
-		return i
-	}
-	return -1
 }
 
 // indexByte finds b in haystack starting at from; -1 if not found.
