@@ -34,12 +34,10 @@ type MMDVMRadio struct {
 	open         bool
 	protoVersion int // MMDVM protocol version (1 or 2), from GET_VERSION
 
-	hdrCh   chan dstar.DVHeader
-	frmCh   chan dstar.DVFrame
-	gpsCh   chan string // NMEA sentences observed on the serial stream
-	nmeaBuf []byte      // line-assembly buffer for observeNMEA (single reader goroutine)
-	stopCh  chan struct{}
-	wg      sync.WaitGroup // tracks readLoop + statusLoop
+	hdrCh  chan dstar.DVHeader
+	frmCh  chan dstar.DVFrame
+	stopCh chan struct{}
+	wg     sync.WaitGroup // tracks readLoop + statusLoop
 }
 
 // NewMMDVMRadio returns a new, unopened MMDVMRadio.
@@ -47,72 +45,22 @@ func NewMMDVMRadio() *MMDVMRadio {
 	return &MMDVMRadio{
 		hdrCh: make(chan dstar.DVHeader, 8),
 		frmCh: make(chan dstar.DVFrame, 32),
-		gpsCh: make(chan string, 8),
 	}
 }
 
 // mmdvmPortReader wraps a serial.Port to handle timeout detection.
 // go.bug.st/serial returns (0, nil) on timeout; this converts that to errMmdvmTimeout.
-// It also tees every byte read to observeNMEA so standalone NMEA GPS sentences
-// (TH-D75 "PC Output (GPS)") interleaved with MMDVM frames can be captured.
 type mmdvmPortReader struct {
-	port  serial.Port
-	radio *MMDVMRadio
+	port serial.Port
 }
 
 func (r *mmdvmPortReader) Read(p []byte) (int, error) {
 	n, err := r.port.Read(p)
-	if n > 0 && r.radio != nil {
-		r.radio.observeNMEA(p[:n])
-	}
 	if n == 0 && err == nil {
 		return 0, errMmdvmTimeout
 	}
 	return n, err
 }
-
-// observeNMEA scans raw serial bytes for standalone NMEA-0183 sentences that
-// the TH-D75 emits continuously via "PC Output (GPS)", interleaved with the
-// MMDVM frame stream. MMDVM frame bytes are binary and are ignored; only a
-// complete printable "$....<CR/LF>" run is forwarded on gpsCh. This lets the
-// app obtain a GPS fix without the operator keying up (unlike the D-PRS that
-// rides in the D-STAR slow data, which needs a long transmission to complete).
-//
-// Called only from the single active reader goroutine, so nmeaBuf needs no lock.
-func (m *MMDVMRadio) observeNMEA(data []byte) {
-	for _, b := range data {
-		switch {
-		case b == '$':
-			m.nmeaBuf = append(m.nmeaBuf[:0], b) // start a fresh sentence
-		case len(m.nmeaBuf) == 0:
-			// not assembling a sentence — ignore (MMDVM/binary byte)
-		case b == '\r' || b == '\n':
-			if len(m.nmeaBuf) >= 7 { // "$GxRMC," minimum
-				select {
-				case m.gpsCh <- string(m.nmeaBuf):
-				default: // consumer slow — drop this sentence
-				}
-			}
-			m.nmeaBuf = m.nmeaBuf[:0]
-		case b >= 0x20 && b <= 0x7E:
-			if len(m.nmeaBuf) < 100 {
-				m.nmeaBuf = append(m.nmeaBuf, b)
-			} else {
-				m.nmeaBuf = m.nmeaBuf[:0] // overlong — abandon
-			}
-		default:
-			// non-printable byte inside a candidate = interleaved MMDVM binary;
-			// abandon this candidate.
-			m.nmeaBuf = m.nmeaBuf[:0]
-		}
-	}
-}
-
-// RxGPS returns a channel of raw NMEA sentences observed on the serial stream.
-// The router consumes these to update the shared GPS cache. Exposed as an
-// optional capability (not part of RadioInterface) — the router type-asserts
-// for it, so only radios that emit NMEA (TH-D75) provide it.
-func (m *MMDVMRadio) RxGPS() <-chan string { return m.gpsCh }
 
 // errMmdvmTimeout is returned when a read times out with no data.
 var errMmdvmTimeout = fmt.Errorf("mmdvm: read timeout")
@@ -217,7 +165,7 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 
 // reader returns a timeout-aware io.Reader wrapping the serial port.
 func (m *MMDVMRadio) reader() io.Reader {
-	return &mmdvmPortReader{port: m.port, radio: m}
+	return &mmdvmPortReader{port: m.port}
 }
 
 // drainPort reads and logs any bytes sitting in the serial buffer.
@@ -379,9 +327,6 @@ func (m *MMDVMRadio) Close() error {
 	m.mu.Unlock()
 	// Wait for goroutines to exit after releasing the lock (they need it).
 	m.wg.Wait()
-	// No more reads can run now, so no further observeNMEA sends — safe to
-	// close gpsCh so the router's GPS consumer unblocks and exits.
-	close(m.gpsCh)
 	return err
 }
 
