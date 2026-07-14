@@ -139,7 +139,39 @@ func (rt *Router) Start() {
 		rt.wg.Add(2)
 		go rt.txLoop() // radio → reflector
 		go rt.rxLoop() // reflector → radio
+
+		// Some radios (TH-D75) stream standalone NMEA GPS sentences over the
+		// serial link independently of any transmission ("PC Output (GPS)").
+		// If the radio exposes them, consume them into the GPS cache so a fix
+		// is available without the operator keying up.
+		if gs, ok := rt.radio.(interface{ RxGPS() <-chan string }); ok {
+			rt.wg.Add(1)
+			go rt.radioGPSLoop(gs.RxGPS())
+		}
 	})
+}
+
+// radioGPSLoop consumes standalone NMEA sentences emitted by the radio and
+// updates the shared GPS cache. Unlike the slow-data D-PRS path (txLoop), this
+// works without a transmission — the radio streams position continuously.
+func (rt *Router) radioGPSLoop(ch <-chan string) {
+	defer rt.wg.Done()
+	for {
+		select {
+		case <-rt.stopCh:
+			return
+		case line, ok := <-ch:
+			if !ok {
+				return
+			}
+			pos, ok := aprs.ParsePosition(line)
+			if !ok {
+				continue
+			}
+			rt.gps.Set(pos)
+			log.Printf("router: GPS fix from radio (NMEA): %.5f, %.5f", pos.Lat, pos.Lon)
+		}
+	}
 }
 
 // Stop signals the routing goroutines to exit, waits for them to finish,
