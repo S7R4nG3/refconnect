@@ -44,6 +44,22 @@ func TestDPRSRoundTrip(t *testing.T) {
 	}
 }
 
+// TestValidateDPRSRealRadioSentence pins the D-PRS CRC to a real IC-705
+// sentence captured on-air (2026-07-12). The radio's CRC (0xD247) is computed
+// over the payload including the trailing "\r"; validating without the CR
+// (0x251E) is the bug this guards against.
+func TestValidateDPRSRealRadioSentence(t *testing.T) {
+	sentence := "$$CRCD247,KR4GCQ>API705,DSTAR*:!3513.91N/08051.27W[/\r"
+	got, ok := ValidateDPRS(sentence)
+	if !ok {
+		t.Fatalf("ValidateDPRS rejected real IC-705 sentence: %q", sentence)
+	}
+	want := "KR4GCQ>API705,DSTAR*:!3513.91N/08051.27W[/"
+	if got != want {
+		t.Errorf("payload = %q, want %q", got, want)
+	}
+}
+
 func TestValidateDPRSBadCRC(t *testing.T) {
 	// Flip a byte in the body — CRC should no longer match.
 	bad := "$$CRC0000,KR4GCQ-1>APDPRS,DSTAR*:!3340.00N/08425.00W>RefConnect\r"
@@ -77,6 +93,37 @@ func TestParseTNC2(t *testing.T) {
 	}
 	if math.Abs(pos.Lon-(-84.4167)) > 0.001 {
 		t.Errorf("TNC2 lon = %v, want ~-84.4167", pos.Lon)
+	}
+}
+
+// TestParseTNC2TimestampedTHD75 pins the real TH-D75 D-PRS payload captured
+// on-air (2026-07-13). The Kenwood uses the timestamped '/' position format —
+// a 7-char timestamp ("131335z") precedes the coordinates — which the parser
+// must skip. The '/A=000774' altitude extension must not be mistaken for a
+// position indicator.
+func TestParseTNC2TimestampedTHD75(t *testing.T) {
+	s := "KR4GCQ-7>APK005,DSTAR*:/131335z3513.92N/08051.27W[169/000/A=000774"
+	pos, ok := ParsePosition(s)
+	if !ok {
+		t.Fatalf("ParsePosition rejected real TH-D75 timestamped payload: %q", s)
+	}
+	if math.Abs(pos.Lat-35.2320) > 0.001 {
+		t.Errorf("lat = %v, want ~35.2320", pos.Lat)
+	}
+	if math.Abs(pos.Lon-(-80.8545)) > 0.001 {
+		t.Errorf("lon = %v, want ~-80.8545", pos.Lon)
+	}
+}
+
+// TestParseTNC2Messaging covers the '@' (timestamp + messaging) indicator.
+func TestParseTNC2Messaging(t *testing.T) {
+	s := "N0CALL>APRS,WIDE1-1:@092345z3340.00N/08425.00W>test"
+	pos, ok := ParsePosition(s)
+	if !ok {
+		t.Fatalf("ParsePosition rejected '@' timestamped payload: %q", s)
+	}
+	if math.Abs(pos.Lat-33.6667) > 0.001 || math.Abs(pos.Lon-(-84.4167)) > 0.001 {
+		t.Errorf("got %v,%v want ~33.6667,-84.4167", pos.Lat, pos.Lon)
 	}
 }
 

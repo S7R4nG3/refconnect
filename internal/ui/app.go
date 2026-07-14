@@ -96,7 +96,14 @@ func Run(cfg *config.Config) {
 			on, _ := a.aprsEnabled.Get()
 			a.cfg.APRS.Enabled = on
 			if on {
-				a.startAPRS()
+				// Only start the beacon loop if a reflector is already linked
+				// (e.g. the user toggled APRS on mid-session). At app startup
+				// nothing is connected yet, so starting here would fire the
+				// send_on_connect beacon before a router exists and abort it;
+				// connect() starts the loop once the reflector is up instead.
+				if a.reflector != nil && a.reflector.State() == protocol.StateConnected {
+					a.startAPRS()
+				}
 			} else {
 				a.stopAPRS()
 			}
@@ -270,7 +277,8 @@ func (a *App) disconnect() {
 }
 
 // startAPRS begins a goroutine that sends a DPRS beacon on connect (if
-// configured) and thereafter on a ticker. It is idempotent.
+// configured), on the periodic interval, and promptly whenever a fresh GPS
+// fix arrives from the radio. It is idempotent.
 func (a *App) startAPRS() {
 	a.aprsMu.Lock()
 	defer a.aprsMu.Unlock()
@@ -292,23 +300,53 @@ func (a *App) startAPRS() {
 	}
 
 	go func() {
+		// The radio only caches a GPS fix while the user is transmitting, so a
+		// fix typically lands mid-interval. Rather than wait up to a full
+		// interval (and risk the app closing first), poll frequently and beacon
+		// as soon as a new fix appears — throttled by minFixGap so a long
+		// transmission (which re-caches a fix every superframe) can't spam
+		// APRS-IS. The periodic interval still fires for static/unchanged fixes.
+		const pollInterval = 15 * time.Second
+		const minFixGap = 60 * time.Second
+
+		var lastSentAt time.Time // when we last beaconed
+		var lastFixAt time.Time  // Cache.updated of the fix we last beaconed
+
 		if sendOnConnect {
-			// Delay slightly so the link settles before the first beacon.
+			// Let the link settle before the first (static/available) beacon.
 			select {
 			case <-stop:
 				return
 			case <-time.After(5 * time.Second):
-				a.sendBeacon()
 			}
+		} else {
+			// Suppress the initial beacon; the periodic path waits a full
+			// interval. A fresh radio fix can still trigger sooner, below.
+			lastSentAt = time.Now()
 		}
-		t := time.NewTicker(interval)
-		defer t.Stop()
+
+		poll := time.NewTicker(pollInterval)
+		defer poll.Stop()
 		for {
+			if rt := a.rt; rt != nil {
+				_, fixAt, hasFix := rt.GPS().Get()
+				now := time.Now()
+				newFix := hasFix && fixAt.After(lastFixAt)
+				havePosition := hasFix || a.cfg.APRS.HasStaticPosition()
+				// Fresh radio fix (throttled), or the periodic interval elapsed.
+				if (newFix && now.Sub(lastSentAt) >= minFixGap) ||
+					(havePosition && now.Sub(lastSentAt) >= interval) {
+					a.sendBeacon()
+					lastSentAt = now
+					if hasFix {
+						lastFixAt = fixAt
+					}
+				}
+			}
 			select {
 			case <-stop:
 				return
-			case <-t.C:
-				a.sendBeacon()
+			case <-poll.C:
 			}
 		}
 	}()
@@ -358,38 +396,29 @@ func (a *App) sendBeacon() {
 	if len(a.cfg.APRS.SymbolTable) > 0 {
 		symTable = a.cfg.APRS.SymbolTable[0]
 	}
-	symChar := byte('>')
+	// Default to the APRS "person" symbol (/[) when unset — RefConnect targets
+	// portable/handheld operators. Config Symbol/SymbolTable override it.
+	symChar := byte('[')
 	if len(a.cfg.APRS.Symbol) > 0 {
 		symChar = a.cfg.APRS.Symbol[0]
 	}
 	tnc2 := aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment)
 	log.Printf("aprs: TNC2 packet: %s", tnc2)
-	sentence := aprs.WrapDPRS(tnc2)
-	hdr, err := a.rt.SendBeacon(sentence)
-	if err != nil {
-		log.Printf("aprs: beacon send to reflector failed: %v", err)
-		a.appendLog("APRS beacon failed: " + err.Error())
-		return
-	}
-	log.Printf("aprs: beacon sent to reflector OK")
-	// Announce the beacon header to ircDDB so it appears in routing tables
-	// and Last Heard pages.
-	if a.irc != nil {
-		a.irc.AnnounceUser(hdr, "")
-		log.Printf("aprs: ircDDB AnnounceUser sent")
-	}
-	// Forward the position report to APRS-IS so it appears on aprs.fi.
+
+	// Position beacons are forwarded to APRS-IS (aprs.fi) only. They are
+	// intentionally NOT transmitted over the reflector: a reflector beacon is a
+	// separate D-STAR transmission that would show the operator a second time in
+	// the reflector's "Last Heard" (and ircDDB) right after each voice key-up.
 	if a.aprsIS == nil {
 		a.aprsIS = aprs.NewAPRSISClient(call, "RefConnect", "0.7.0")
 	}
 	if err := a.aprsIS.Send(tnc2); err != nil {
 		log.Printf("aprs: APRS-IS send failed: %v", err)
-		a.appendLog("APRS-IS: " + err.Error())
-	} else {
-		log.Printf("aprs: APRS-IS send OK")
-		a.appendLog("APRS-IS: position forwarded.")
+		a.appendLog("APRS-IS send failed: " + err.Error())
+		return
 	}
-	a.appendLog(fmt.Sprintf("APRS beacon sent (%.5f, %.5f).", pos.Lat, pos.Lon))
+	log.Printf("aprs: APRS-IS send OK")
+	a.appendLog(fmt.Sprintf("APRS position sent to aprs.fi (%.5f, %.5f).", pos.Lat, pos.Lon))
 }
 
 // openRadio opens the serial port for the radio.

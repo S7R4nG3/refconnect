@@ -21,7 +21,7 @@ func Default() *Config {
 		},
 		APRS: APRSConfig{
 			Enabled:               false,
-			Symbol:                ">",
+			Symbol:                "[", // APRS "person" symbol (with "/" table)
 			SymbolTable:           "/",
 			Comment:               "RefConnect D-STAR",
 			BeaconIntervalMinutes: 30,

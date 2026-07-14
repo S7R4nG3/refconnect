@@ -5,14 +5,16 @@ package dstar
 //   - Frame 0: sync pattern {0x55, 0x2D, 0x16} (NOT scrambled)
 //   - Frames 1–20: scrambled payload (60 bytes)
 //
-// Each payload byte is XOR'd with a scrambling sequence before transmission.
-// The scrambler is the standard D-STAR PRBS from the G4KLX reference
-// implementation (OpenDV / ircDDBGateway).
+// Each payload byte is XOR'd with a fixed 3-byte scrambling key before
+// transmission. The key repeats on every non-sync frame (it is NOT a
+// per-position table); the sync frame is never scrambled.
 //
-// D-STAR slow data types (first byte of unscrambled block):
-//   0x30 - GPS/DPRS
-//   0x43 - short message (text)
-//   0x00 - null / filler
+// D-STAR slow data types (high nibble of the first byte of an unscrambled
+// 6-byte segment; low nibble is the segment data length):
+//   0x3n - GPS / D-PRS
+//   0x4n - short message (text)
+//   0x5n - header / callsign
+//   0x0n / 0x6n - null / filler
 //
 // References: D-STAR Technical Specification, Section 7.3
 
@@ -21,31 +23,17 @@ package dstar
 // start of a slow-data block.
 var SyncSlowData = [3]byte{0x55, 0x2D, 0x16}
 
-// scrambler is the 60-byte XOR sequence applied to frames 1–20 of each
-// superframe. Frame n (1 ≤ n ≤ 20) uses bytes [(n-1)*3 .. (n-1)*3+2].
-// Source: G4KLX OpenDV DStarDefines / ircDDBGateway PRBS table.
-var scrambler = [60]byte{
-	0x70, 0x4F, 0x93, // frame 1
-	0x40, 0x64, 0x74, // frame 2
-	0x6D, 0x30, 0x2B, // frame 3
-	0x6B, 0x6E, 0x38, // frame 4
-	0x68, 0xBA, 0xCC, // frame 5
-	0x9E, 0x50, 0x00, // frame 6
-	0x7F, 0xD5, 0x97, // frame 7
-	0xD7, 0x22, 0x5F, // frame 8
-	0x06, 0x92, 0x7A, // frame 9
-	0x87, 0x5B, 0x19, // frame 10
-	0x83, 0x07, 0xE3, // frame 11
-	0xDD, 0xCA, 0xB6, // frame 12
-	0xCA, 0xD0, 0x0C, // frame 13
-	0x54, 0x91, 0xE7, // frame 14
-	0x35, 0x4D, 0x2C, // frame 15
-	0x29, 0xE8, 0x22, // frame 16
-	0x49, 0xF3, 0xC8, // frame 17
-	0xDB, 0x4E, 0x62, // frame 18
-	0xE6, 0xF3, 0xFB, // frame 19
-	0x85, 0x08, 0xD3, // frame 20
-}
+// scramblerKey is the fixed 3-byte XOR key applied to every non-sync
+// slow-data frame (seq 1–20). D-STAR repeats this same key on each frame's
+// 3 bytes — it is not a per-position table.
+//
+// Verified against ground-truth IC-705 captures (pcaps/doozy-cap.pcapng and
+// pcaps/radio-comm.pcapng): descrambling a full slow-data superframe with
+// this key yields the readable D-STAR header/callsign segments
+// (RPT2/RPT1="DIRECT", URCALL="CQCQCQ", MYCALL="KR4GCQ"). The previous
+// 60-byte table matched only the first frame and produced garbage after —
+// which also made outbound beacon/text slow data unreadable. See GPS.md.
+var scramblerKey = [3]byte{0x70, 0x4F, 0x93}
 
 // ScrambleSlowData applies the scrambling XOR to 3 bytes of slow data
 // given the frame sequence number (0–20). Scrambling is self-inverse,
@@ -53,15 +41,13 @@ var scrambler = [60]byte{
 //
 // Frame 0 is the sync frame and is returned unchanged (no scrambling).
 func ScrambleSlowData(raw [3]byte, seq uint8) [3]byte {
-	s := seq % 21
-	if s == 0 {
+	if seq%21 == 0 {
 		return raw // sync frame — not scrambled
 	}
-	idx := int(s-1) * 3
 	return [3]byte{
-		raw[0] ^ scrambler[idx],
-		raw[1] ^ scrambler[idx+1],
-		raw[2] ^ scrambler[idx+2],
+		raw[0] ^ scramblerKey[0],
+		raw[1] ^ scramblerKey[1],
+		raw[2] ^ scramblerKey[2],
 	}
 }
 

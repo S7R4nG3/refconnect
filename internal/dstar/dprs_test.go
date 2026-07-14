@@ -68,6 +68,52 @@ func TestDPRSDecoderIgnoresNonGPSSegments(t *testing.T) {
 	}
 }
 
+// TestDPRSDecoderSelfSyncsWithWrongSeq reproduces the MMDVM/TH-D75 failure
+// mode: the caller's seq is unreliable (the radio package synthesizes it by
+// counting frames, and it drifts). As long as the unscrambled sync triplet is
+// present in the stream, the decoder must still recover the sentence by
+// locking onto that pattern rather than trusting seq. The bogus seq below even
+// lands on multiples of 21 for real data frames — which previously would have
+// passed them through unscrambled and corrupted the segments.
+func TestDPRSDecoderSelfSyncsWithWrongSeq(t *testing.T) {
+	sentence := "$$CRC29AD,KR4GCQ-1>APDPRS,DSTAR*:!3340.00N/08425.00W>RefConnect\r"
+	frames := EncodeDPRSFrames(sentence, 0)
+
+	var dec DPRSDecoder
+	var got []string
+	bogus := uint8(13) // arbitrary starting offset, unrelated to real position
+	for _, f := range frames {
+		got = append(got, dec.Feed(f, bogus)...)
+		bogus = (bogus + 1) % (MaxSeq + 1) // drifts across 0 repeatedly
+	}
+
+	if len(got) != 1 || got[0] != sentence {
+		t.Fatalf("self-sync decode failed with wrong seq: got %#v, want [%q]", got, sentence)
+	}
+}
+
+// TestDPRSDecoderExtractsRawNMEA covers a radio configured to embed plain
+// NMEA ("$GPRMC…") in the GPS slow-data segments rather than the D-PRS
+// "$$CRC…" form. Previously the decoder only searched for "$$CRC" and silently
+// discarded NMEA; it must now surface any "$…\r" sentence so the router's NMEA
+// fallback can parse the position.
+func TestDPRSDecoderExtractsRawNMEA(t *testing.T) {
+	nmea := "$GPRMC,123519,A,3513.91,N,08051.27,W,000.0,000.0,130726,,*1B\r"
+	frames := EncodeDPRSFrames(nmea, 0)
+
+	var dec DPRSDecoder
+	var got []string
+	seq := uint8(0)
+	for _, f := range frames {
+		got = append(got, dec.Feed(f, seq)...)
+		seq = (seq + 1) % (MaxSeq + 1)
+	}
+
+	if len(got) != 1 || got[0] != nmea {
+		t.Fatalf("raw NMEA extraction failed: got %#v, want [%q]", got, nmea)
+	}
+}
+
 func TestDPRSDecoderSkipsSyncFrames(t *testing.T) {
 	var dec DPRSDecoder
 	// Feeding a sync frame should not produce output or disrupt state.

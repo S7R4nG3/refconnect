@@ -5,11 +5,20 @@ import (
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 	"go.bug.st/serial"
 )
+
+// handshakeWatchdog bounds how long Open() will wait for the MMDVM handshake
+// to complete before it force-closes the serial port and aborts. macOS's
+// Bluetooth SPP driver can leave a blocking Read wedged indefinitely,
+// ignoring SetReadTimeout; without this bound the handshake (and, previously,
+// the whole app) would hang forever. The value comfortably exceeds a normal
+// full GET_VERSION retry cycle (~70s) so a slow-but-working radio is not cut off.
+const handshakeWatchdog = 90 * time.Second
 
 // MMDVMRadio implements RadioInterface over the MMDVM serial protocol.
 // This is used for radios like the Kenwood TH-D75 that act as MMDVM modems,
@@ -57,9 +66,13 @@ func (r *mmdvmPortReader) Read(p []byte) (int, error) {
 var errMmdvmTimeout = fmt.Errorf("mmdvm: read timeout")
 
 func (m *MMDVMRadio) Open(cfg Config) error {
+	// Port setup runs under the lock, but the lock is released before the
+	// slow handshake below. Holding m.mu across the handshake would let a
+	// wedged Read (see handshakeWatchdog) block Close() forever, freezing
+	// the whole app with no way to cancel.
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.open {
+		m.mu.Unlock()
 		return fmt.Errorf("mmdvm: already open")
 	}
 
@@ -72,6 +85,7 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	}
 	p, err := serial.Open(cfg.Port, mode)
 	if err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("mmdvm: open %s: %w", cfg.Port, err)
 	}
 	// Set DTR high — required for TH-D75 (confirmed by BlueDV docs).
@@ -88,6 +102,7 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	m.open = true
 	m.stopCh = make(chan struct{})
 	log.Printf("mmdvm: opened %s", cfg.Port)
+	m.mu.Unlock()
 
 	// Give the modem time to initialize after port opens (per MMDVMHost).
 	log.Printf("mmdvm: waiting 2s for modem to initialize…")
@@ -96,12 +111,46 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	// Drain any bytes the modem may have sent during the init delay.
 	m.drainPort()
 
+	// Watchdog: if the handshake wedges (macOS BT SPP can block Read forever),
+	// force-close the port to unblock the stuck read and abort the connection
+	// attempt instead of hanging. Also fires if the user hits Close mid-handshake.
+	var watchdogFired atomic.Bool
+	handshakeDone := make(chan struct{})
+	go func() {
+		select {
+		case <-handshakeDone:
+		case <-time.After(handshakeWatchdog):
+			watchdogFired.Store(true)
+			log.Printf("mmdvm: handshake watchdog (%s) expired — force-closing port to abort", handshakeWatchdog)
+			m.mu.Lock()
+			if m.port != nil {
+				m.port.Close() //nolint:errcheck
+			}
+			m.mu.Unlock()
+		}
+	}()
+
 	// Attempt MMDVM handshake: GET_VERSION → SET_FREQ → SET_CONFIG.
 	// If the handshake fails, log the error but continue anyway —
 	// the radio may not require a full handshake and might start
 	// responding once we begin sending status polls.
-	if err := m.handshake(); err != nil {
-		log.Printf("mmdvm: handshake failed: %v — continuing with status polling", err)
+	hsErr := m.handshake()
+	close(handshakeDone)
+
+	// If the watchdog fired (or the user closed the port during the
+	// handshake), the port is already closed. Abort cleanly so the UI can
+	// re-enable Connect instead of leaving loops running on a dead port.
+	m.mu.Lock()
+	if watchdogFired.Load() || !m.open {
+		m.open = false
+		m.port = nil
+		m.mu.Unlock()
+		return fmt.Errorf("mmdvm: radio did not respond within %s — aborted (check the radio is in Reflector TERM mode and reachable, or connect via USB-C; macOS Bluetooth SPP can stall)", handshakeWatchdog)
+	}
+	m.mu.Unlock()
+
+	if hsErr != nil {
+		log.Printf("mmdvm: handshake failed: %v — continuing with status polling", hsErr)
 	}
 
 	m.wg.Add(2)
@@ -146,19 +195,28 @@ func (m *MMDVMRadio) drainPort() {
 // Retries GET_VERSION up to 6 times with 1.5s gaps (matching MMDVMHost behavior).
 func (m *MMDVMRadio) handshake() error {
 	log.Printf("mmdvm: starting handshake")
-	m.port.SetReadTimeout(2 * time.Second) //nolint:errcheck
+	// A working modem answers GET_VERSION on the first poll within a few
+	// hundred ms, so the budget below is kept tight: an unresponsive radio
+	// (common over Bluetooth) now fails in ~11s instead of ~69s, while a
+	// live modem still connects on the first poll of the first attempt.
+	const (
+		maxRetries    = 3
+		pollsPerTry   = 3
+		readTimeout   = 1 * time.Second
+		retryInterval = 500 * time.Millisecond
+	)
+	m.port.SetReadTimeout(readTimeout) //nolint:errcheck
 
-	const maxRetries = 6
 	for attempt := range maxRetries {
 		log.Printf("mmdvm: sending GET_VERSION (attempt %d/%d)", attempt+1, maxRetries)
 		if err := mmdvmWriteGetVersion(m.port); err != nil {
 			return fmt.Errorf("write GET_VERSION: %w", err)
 		}
 
-		// Poll for response: up to 5 reads with 2s timeout each.
+		// Poll for response: up to pollsPerTry reads, each bounded by readTimeout.
 		r := m.reader()
-		for i := range 5 {
-			log.Printf("mmdvm: reading frame (poll %d/5)…", i+1)
+		for i := range pollsPerTry {
+			log.Printf("mmdvm: reading frame (poll %d/%d)…", i+1, pollsPerTry)
 			frm, err := mmdvmReadFrame(r)
 			if err != nil {
 				if err != errMmdvmTimeout {
@@ -179,8 +237,8 @@ func (m *MMDVMRadio) handshake() error {
 		}
 
 		if attempt < maxRetries-1 {
-			log.Printf("mmdvm: no GET_VERSION response, retrying in 1.5s…")
-			time.Sleep(1500 * time.Millisecond)
+			log.Printf("mmdvm: no GET_VERSION response, retrying in %s…", retryInterval)
+			time.Sleep(retryInterval)
 		}
 	}
 
@@ -321,6 +379,14 @@ func (m *MMDVMRadio) readLoop() {
 	r := m.reader()
 	firstStatus := false
 
+	// dstarSeq tracks the D-STAR slow-data sequence number (0–20) within the
+	// current transmission. MMDVM data frames — unlike the Icom DV-Gateway
+	// protocol — don't carry the seq inline, so we count it ourselves: reset
+	// to 0 on each header, increment (mod 21) per data frame. The DPRS decoder
+	// needs this to unscramble slow data and locate sync frames; without it,
+	// the radio's embedded GPS position never decodes.
+	var dstarSeq uint8
+
 	for {
 		select {
 		case <-m.stopCh:
@@ -372,6 +438,9 @@ func (m *MMDVMRadio) readLoop() {
 				continue
 			}
 			log.Printf("mmdvm: RX header: %s → %s", h.MyCall, h.YourCall)
+			// New transmission — restart the slow-data sequence counter so the
+			// DPRS decoder aligns to the superframe (frame 0 = sync).
+			dstarSeq = 0
 			m.hdrCh <- h
 
 		case mmdvmDStarData:
@@ -379,9 +448,21 @@ func (m *MMDVMRadio) readLoop() {
 				log.Printf("mmdvm: D-STAR voice frame too short (%d bytes)", len(frm.payload))
 				continue
 			}
-			f := dstar.DVFrame{}
+			var slow [3]byte
+			copy(slow[:], frm.payload[9:12])
+			// Re-sync the synthesized counter on the D-STAR sync triplet
+			// (55 2D 16, sent unscrambled every 21 frames). MMDVM data frames
+			// carry no inline seq, so counting from the header alone drifts
+			// permanently if any frame is dropped or the first frame isn't the
+			// sync frame. Locking onto the self-identifying sync pattern keeps
+			// DVFrame.Seq honest for downstream consumers. (The DPRS decoder
+			// self-syncs the same way and no longer relies on this seq.)
+			if slow == dstar.SyncSlowData {
+				dstarSeq = 0
+			}
+			f := dstar.DVFrame{Seq: dstarSeq, SlowData: slow}
 			copy(f.AMBE[:], frm.payload[:9])
-			copy(f.SlowData[:], frm.payload[9:12])
+			dstarSeq = (dstarSeq + 1) % (dstar.MaxSeq + 1)
 			m.frmCh <- f
 
 		case mmdvmDStarLost:
