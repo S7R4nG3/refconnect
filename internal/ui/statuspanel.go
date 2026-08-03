@@ -13,6 +13,7 @@ import (
 // buildStatusPanel returns the link status and activity display.
 func buildStatusPanel(a *App) fyne.CanvasObject {
 	linkRich := widget.NewRichText()
+	linkRich.Wrapping = fyne.TextWrapWord // let longer error/suggestion text wrap
 	updateLinkText := func(state string) {
 		color := theme.ColorNameError // red — disconnected / error
 		if strings.HasPrefix(state, "Connected") {

@@ -2,8 +2,11 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -207,6 +210,7 @@ func (a *App) connect(entry config.ReflectorEntry) {
 			log.Printf("connect: failed to %s: %v", entry.Host, err)
 			a.appendLog("Connect failed: " + err.Error())
 			fyne.Do(func() { a.linkState.Set("Error: " + err.Error()) }) //nolint:errcheck
+			a.suggestXLXOrigin(entry)
 			return
 		}
 		log.Printf("connect: linked to %s", entry.Host)
@@ -241,6 +245,57 @@ func (a *App) connect(entry config.ReflectorEntry) {
 			}
 		}()
 	}()
+}
+
+// suggestXLXOrigin runs after a failed connect to an XLX reflector. It queries
+// the XLX central registry for the reflector's real origin IP and, if that
+// differs from the address we just tried, tells the user how to reach it. A
+// proxied hostname (e.g. one fronted by Cloudflare) answers DNS but silently
+// drops the reflector's UDP traffic, so the registry IP is often the address
+// that actually works. This is advisory only — it does not retry.
+func (a *App) suggestXLXOrigin(entry config.ReflectorEntry) {
+	name := strings.ToUpper(strings.TrimSpace(a.reflectorCall))
+	if !strings.HasPrefix(name, "XLX") {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	rec, err := xlx.LookupOrigin(ctx, name)
+	if err != nil {
+		log.Printf("connect: XLX registry lookup for %s failed: %v", name, err)
+		return
+	}
+
+	// Don't suggest an address we're already using — that would just be noise
+	// if the reflector is genuinely down or the origin IP itself is unreachable.
+	if sameHost(entry.Host, rec.LastIP) {
+		return
+	}
+
+	a.appendLog(fmt.Sprintf(
+		"%s may be behind a proxy — %q resolves in DNS but its UDP ports may be unreachable. "+
+			"Try setting the Host field to the reflector's registry IP: %s",
+		name, entry.Host, rec.LastIP))
+	// Surface the actionable suggestion in the link status too — a concise
+	// variant, since that field is far smaller than the log.
+	fyne.Do(func() { //nolint:errcheck
+		a.linkState.Set(fmt.Sprintf("Error: %s may be proxied — try Host %s", name, rec.LastIP))
+	})
+}
+
+// sameHost reports whether host is, or resolves to, the given IP. It lets
+// suggestXLXOrigin avoid recommending an address the user is already connected
+// through.
+func sameHost(host, ip string) bool {
+	if strings.TrimSpace(host) == ip {
+		return true
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(addrs, ip)
 }
 
 // disconnect gracefully unlinks from the current reflector and de-registers from ircDDB.

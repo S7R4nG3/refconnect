@@ -79,28 +79,51 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		typeNames[i] = rt.prefix
 	}
 
-	// hostLink shows the dynamically constructed hostname as a clickable link
-	// so the user can verify it before connecting and jump to the reflector's
-	// status page.
+	// hostLink mirrors the editable host field as a clickable link so the user
+	// can verify it before connecting and jump to the reflector's status page.
 	hostLink := widget.NewHyperlink("—", nil)
 
 	selectedType := reflectorTypeByPrefix("REF")
 	currentID := "001"
 
-	domainEntry := widget.NewEntry()
-	domainEntry.SetText(selectedType.defaultDomain)
+	// defaultHost builds the conventional hostname for a reflector family and
+	// ID — e.g. REF + 001 + dstargateway.org -> "ref001.dstargateway.org". When
+	// the family has no default domain (XLX), it returns just the "<prefix><id>"
+	// stub for the user to complete.
+	defaultHost := func(rt reflectorType, id string) string {
+		base := strings.ToLower(rt.prefix) + strings.ToLower(strings.TrimSpace(id))
+		if strings.TrimSpace(rt.defaultDomain) == "" {
+			return base
+		}
+		return base + "." + rt.defaultDomain
+	}
 
-	updateHost := func() {
-		if currentID == "" {
+	// hostEntry holds the FULL host (hostname or raw IP) used for UDP. It is
+	// auto-populated from the reflector type + ID, but is fully editable so the
+	// user can override it — e.g. to bypass a Cloudflare-proxied hostname by
+	// entering the reflector's origin IP directly.
+	hostEntry := widget.NewEntry()
+	hostEntry.SetPlaceHolder("hostname or IP")
+
+	// hostManual tracks whether the user has typed into hostEntry directly. Once
+	// they have, changing the ID no longer clobbers their value (changing the
+	// Type still resets it, since that's an explicit family switch). The
+	// programmatic guard keeps our own SetText calls from counting as edits.
+	hostManual := false
+	programmatic := false
+	setHost := func(s string) {
+		programmatic = true
+		hostEntry.SetText(s)
+		programmatic = false
+	}
+
+	updateHostLink := func() {
+		host := strings.TrimSpace(hostEntry.Text)
+		if host == "" {
 			hostLink.SetText("—")
 			hostLink.SetURL(nil)
 			return
 		}
-		host := fmt.Sprintf("%s%s.%s",
-			strings.ToLower(selectedType.prefix),
-			strings.ToLower(currentID),
-			strings.TrimSpace(domainEntry.Text),
-		)
 		hostLink.SetText(host)
 		if u, err := url.Parse("http://" + host); err == nil {
 			hostLink.SetURL(u)
@@ -109,12 +132,19 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		}
 	}
 
-	domainEntry.OnChanged = func(string) { updateHost() }
+	hostEntry.OnChanged = func(string) {
+		if !programmatic {
+			hostManual = true
+		}
+		updateHostLink()
+	}
+
+	setHost(defaultHost(selectedType, currentID))
 
 	typeSelect := widget.NewSelect(typeNames, func(s string) {
 		selectedType = reflectorTypeByPrefix(s)
-		domainEntry.SetText(selectedType.defaultDomain)
-		updateHost()
+		hostManual = false
+		setHost(defaultHost(selectedType, currentID))
 	})
 	typeSelect.SetSelected("REF")
 
@@ -122,7 +152,9 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	idEntry.SetText("001")
 	idEntry.OnChanged = func(s string) {
 		currentID = strings.TrimSpace(s)
-		updateHost()
+		if !hostManual {
+			setHost(defaultHost(selectedType, currentID))
+		}
 	}
 
 	moduleSelect := widget.NewSelect(modules, nil)
@@ -147,14 +179,10 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	captureEntry := func() (config.ReflectorEntry, bool) {
 		id := strings.TrimSpace(idEntry.Text)
 		module := moduleSelect.Selected
-		if id == "" || module == "" {
+		host := strings.TrimSpace(hostEntry.Text)
+		if id == "" || module == "" || host == "" {
 			return config.ReflectorEntry{}, false
 		}
-		host := fmt.Sprintf("%s%s.%s",
-			strings.ToLower(selectedType.prefix),
-			strings.ToLower(id),
-			strings.TrimSpace(domainEntry.Text),
-		)
 		name := fmt.Sprintf("%s%s %s", selectedType.prefix, strings.ToUpper(id), module)
 		return config.ReflectorEntry{
 			Name:     name,
@@ -180,16 +208,19 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			if r.Name != name {
 				continue
 			}
-			p, id, dom, mod := parseEntry(r)
+			p, id, _, mod := parseEntry(r)
 			if p == "" {
 				return
 			}
-			typeSelect.SetSelected(p)
+			typeSelect.SetSelected(p) // resets host + hostManual
 			selectedType = reflectorTypeByPrefix(p)
 			idEntry.SetText(id)
-			domainEntry.SetText(dom)
 			moduleSelect.SetSelected(mod)
-			updateHost()
+			// Apply the saved host last so the type/ID handlers above don't
+			// overwrite it. If it deviates from the conventional hostname (e.g.
+			// a raw origin IP), flag it manual so a later ID keystroke keeps it.
+			hostManual = strings.TrimSpace(r.Host) != defaultHost(selectedType, id)
+			setHost(r.Host)
 			return
 		}
 	}
@@ -210,7 +241,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		profileSelect.SetSelected(initialProfile)
 	}
 
-	updateHost()
+	updateHostLink()
 
 	saveBtn := widget.NewButton("Save profile", func() {
 		e, ok := captureEntry()
@@ -332,8 +363,8 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			widget.NewLabel("Profile:"), profileSelect,
 			widget.NewLabel("Type:"), typeSelect,
 			widget.NewLabel("ID:"), idEntry,
-			widget.NewLabel("Domain:"), domainEntry,
-			widget.NewLabel("Host:"), hostLink,
+			widget.NewLabel("Host:"), hostEntry,
+			widget.NewLabel("Link:"), hostLink,
 			widget.NewLabel("Module:"), moduleSelect,
 			widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
 		),
