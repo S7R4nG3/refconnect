@@ -66,6 +66,11 @@ type UIConfig struct {
 	LogMaxLines  int     `yaml:"log_max_lines"`
 	WindowWidth  float32 `yaml:"window_width"`
 	WindowHeight float32 `yaml:"window_height"`
+	// Scale overrides Fyne's UI scale factor (fonts, padding, and the
+	// minimum window size). Useful for small screens where the default
+	// layout is too large to fit. 0 means "auto" — let Fyne detect the
+	// display scale. Typical compact values are 0.6–0.8.
+	Scale float32 `yaml:"scale"`
 }
 
 // LogDir returns the directory where timestamped log files are stored.

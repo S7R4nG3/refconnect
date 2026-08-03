@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/S7R4nG3/refconnect/internal/config"
@@ -44,6 +45,17 @@ func main() {
 	if err != nil {
 		log.Printf("config load error (using defaults): %v", err)
 		cfg = config.Default()
+	}
+
+	// Apply the configured UI scale via FYNE_SCALE before the Fyne app is
+	// created (Fyne reads the env var only at startup). A value already set
+	// in the environment takes precedence so an explicit
+	// `FYNE_SCALE=... ./refconnect` still wins. A config scale of 0 means
+	// "auto" — leave detection to Fyne.
+	if cfg.UI.Scale > 0 {
+		if _, ok := os.LookupEnv("FYNE_SCALE"); !ok {
+			os.Setenv("FYNE_SCALE", strconv.FormatFloat(float64(cfg.UI.Scale), 'f', -1, 32))
+		}
 	}
 
 	ui.Run(cfg)

@@ -32,6 +32,7 @@ func Default() *Config {
 			LogMaxLines:  500,
 			WindowWidth:  960,
 			WindowHeight: 720,
+			Scale:        0, // 0 = auto (let Fyne detect display scale)
 		},
 	}
 }
