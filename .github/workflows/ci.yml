@@ -25,7 +25,10 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libgl1-mesa-dev xorg-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols
 
       - name: Add MinGW to PATH (Windows)
         if: runner.os == 'Windows'
