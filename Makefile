@@ -10,7 +10,7 @@ else
   LDFLAGS = -ldflags="-extldflags=-Wl,-no_warn_duplicate_libraries"
 endif
 
-.PHONY: run build bundle icons-windows clean
+.PHONY: run build bundle icons-windows install-linux clean
 
 linux-packages:
 	sudo apt install -y libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libxxf86vm-dev
@@ -21,6 +21,13 @@ build:
 icons-windows:
 	@go install github.com/tc-hib/go-winres@latest
 	@go-winres simply --icon $(ICON) --arch amd64
+
+# Install a desktop entry + icon for the locally built binary (Linux only).
+DATA_HOME ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)
+install-linux: build
+	@install -Dm644 $(ICON) $(DATA_HOME)/icons/hicolor/32x32/apps/refconnect.png
+	@mkdir -p $(DATA_HOME)/applications
+	@sed 's|^Exec=.*|Exec="$(CURDIR)/$(BINARY)"|' configs/refconnect.desktop > $(DATA_HOME)/applications/refconnect.desktop
 
 bundle: build
 	@rm -rf $(APP)

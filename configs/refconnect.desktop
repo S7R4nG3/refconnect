@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RefConnect
+GenericName=D-STAR Reflector Client
+Comment=Connect a D-STAR radio to internet reflectors
+Exec=refconnect
+Icon=refconnect
+Terminal=false
+Categories=Network;HamRadio;
+StartupWMClass=refconnect

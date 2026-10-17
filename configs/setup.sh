@@ -78,4 +78,22 @@ else
 fi
 
 rm -f "${ASSET}"
+
+# Linux: install the icon and a desktop entry so RefConnect shows up in the
+# application menu with its icon.
+if [ "${os}" = "linux" ] && [ -f refconnect.desktop ] && [ -f refconnect.png ]; then
+    DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+    ICON_DIR="${DATA_HOME}/icons/hicolor/32x32/apps"
+    APP_DIR="${DATA_HOME}/applications"
+    mkdir -p "${ICON_DIR}" "${APP_DIR}"
+
+    mv -f refconnect.png "${ICON_DIR}/refconnect.png"
+    sed "s|^Exec=.*|Exec=\"$(pwd)/refconnect\"|" refconnect.desktop > "${APP_DIR}/refconnect.desktop"
+    rm -f refconnect.desktop
+
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "${APP_DIR}" >/dev/null 2>&1 || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "${DATA_HOME}/icons/hicolor" >/dev/null 2>&1 || true
+    echo "Installed desktop entry to ${APP_DIR}/refconnect.desktop"
+fi
+
 echo "Done. RefConnect ${TAG} installed in the current directory."
