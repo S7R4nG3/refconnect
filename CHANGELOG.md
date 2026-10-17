@@ -1,3 +1,36 @@
+## Unreleased
+
+### Feat
+
+- **configs/refconnect.desktop**: adding desktop entry for linux distros to add app icon
+
+## v0.11.1 (2026-10-16)
+
+### Fix
+
+- **.github/workflows**: updating workflows to install wayland in the ubuntu CI builds
+
+## v0.11.0 (2026-08-03)
+
+### Fix
+
+- **internal/protocol**: fixes to allow for proxied reflector hostnames for XLX and fully editable hostnames
+- **main.go**: adding env overrides to scale UI for smaller screens
+
+## v0.10.0 (2026-07-14)
+
+### Fix
+
+- **mmdvm.go**: reverting nmea parsing for kenwood - sticking to dprs
+- **mmdvm.go**: updating the kenwood to always pull the GPS config from PC Output instead of solely off TX
+- **app.go**: swapping to transmit position data only to APRS and not back to the reflector/ircddb
+- **parser**: updated the parsed to pull out the timestamped gps data from d75
+- **router.go**: updating the router to decode the NMEA position from the d75
+- **mmdvm.go**: updating mmdvm frame decoding
+- **aprs**: fixing aprs gps fixes from radios - need to test with D75
+
+## v0.9.1 (2026-07-10)
+
 ## v0.9.0 (2026-05-14)
 
 ### Feat
