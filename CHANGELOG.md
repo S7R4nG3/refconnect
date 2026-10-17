@@ -1,8 +1,12 @@
-## Unreleased
+## v0.12.0 (2026-10-17)
 
 ### Feat
 
 - **configs/refconnect.desktop**: adding desktop entry for linux distros to add app icon
+
+### Fix
+
+- **README.md**: use GitHub release badge and sync commitizen to v0.11.1
 
 ## v0.11.1 (2026-10-16)
 
