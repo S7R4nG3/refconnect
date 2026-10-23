@@ -92,6 +92,9 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 
 	portRow := container.NewBorder(nil, nil, nil, refreshBtn, portSelect)
 
+	helpLink := widget.NewHyperlink("Need help? Check the docs!",
+		parseURL("https://github.com/S7R4nG3/refconnect/wiki/Connecting-Radios"))
+
 	aprsCheck := widget.NewCheckWithData("Enable APRS", a.aprsEnabled)
 
 	return container.NewVBox(
@@ -101,6 +104,7 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 			protoSelect,
 		),
 		portRow,
+		helpLink,
 		aprsCheck,
 	)
 }
