@@ -1,6 +1,8 @@
 package main
 
 import (
+	_ "embed"
+	"encoding/json"
 	"log"
 	"os"
 	"strconv"
@@ -8,7 +10,24 @@ import (
 
 	"github.com/S7R4nG3/refconnect/internal/config"
 	"github.com/S7R4nG3/refconnect/internal/ui"
+	"github.com/S7R4nG3/refconnect/internal/update"
 )
+
+// versionJSON is kept in sync with the release tag by commitizen (.cz.yaml).
+//
+//go:embed version.json
+var versionJSON []byte
+
+// appVersion returns the embedded release tag, e.g. "v0.12.0".
+func appVersion() string {
+	var v struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(versionJSON, &v); err != nil {
+		log.Printf("version.json parse error: %v", err)
+	}
+	return v.Version
+}
 
 // pruneEmptyLogs removes zero-byte .log files from dir.
 func pruneEmptyLogs(dir string) {
@@ -41,6 +60,12 @@ func main() {
 		}
 	}
 
+	version := appVersion()
+	log.Printf("RefConnect %s", version)
+
+	// Remove the previous executable left behind by an auto-update.
+	update.CleanupOld()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config load error (using defaults): %v", err)
@@ -58,5 +83,5 @@ func main() {
 		}
 	}
 
-	ui.Run(cfg)
+	ui.Run(cfg, version)
 }

@@ -72,7 +72,7 @@ download "${ASSET_URL}" "${ASSET}"
 # Extract to current directory
 echo "Extracting..."
 if [ "${os}" = "darwin" ]; then
-    unzip -q "${ASSET}"
+    unzip -oq "${ASSET}"
 else
     tar -xzf "${ASSET}"
 fi

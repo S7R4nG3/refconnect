@@ -33,8 +33,9 @@ type App struct {
 	fyneApp fyne.App
 	win     fyne.Window
 	cfg     *config.Config
+	version string // running release tag, e.g. "v0.12.0"
 
-	radio           radio.RadioInterface
+	radio          radio.RadioInterface
 	reflector       protocol.Reflector
 	reflectorModule byte   // target module on the reflector (e.g. 'C')
 	reflectorCall   string // reflector D-STAR callsign (e.g. "REF001")
@@ -74,9 +75,10 @@ func (a *App) setThemeMode(mode string) {
 }
 
 // Run initialises the application and blocks until the window is closed.
-func Run(cfg *config.Config) {
+func Run(cfg *config.Config, version string) {
 	a := &App{
 		cfg:         cfg,
+		version:     version,
 		statusText:  binding.NewString(),
 		logLines:    binding.NewStringList(),
 		rxActive:    binding.NewBool(),
@@ -111,6 +113,7 @@ func Run(cfg *config.Config) {
 				a.stopAPRS()
 			}
 		}))
+		go a.checkForUpdate()
 	})
 
 	a.theme = newRefconnectTheme(cfg.UI.Theme)
