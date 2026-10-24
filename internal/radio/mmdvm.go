@@ -34,17 +34,39 @@ type MMDVMRadio struct {
 	open         bool
 	protoVersion int // MMDVM protocol version (1 or 2), from GET_VERSION
 
-	hdrCh  chan dstar.DVHeader
-	frmCh  chan dstar.DVFrame
-	stopCh chan struct{}
-	wg     sync.WaitGroup // tracks readLoop + statusLoop
+	hdrCh    chan dstar.DVHeader
+	frmCh    chan dstar.DVFrame
+	stopCh   chan struct{}  // closed by Close(); stops the supervisor
+	supDone  chan struct{}  // closed when the supervisor exits
+	wg       sync.WaitGroup // tracks the current session's readLoop + statusLoop
+	downCh   chan struct{}  // readLoop signals a dead port (buffered, 1)
+	sessStop chan struct{}  // closed to stop the current session's loops
+	lastRx   atomic.Int64   // UnixNano of the last frame from the radio
+	// rxSinceConnect is set once the radio sends anything on the current port.
+	rxSinceConnect atomic.Bool
+
+	// Notify, if set, receives short user-facing messages about the radio
+	// link (lost, reconnected). Called from a background goroutine.
+	Notify func(msg string)
 }
+
+// Link timing; vars so tests can shorten them.
+var (
+	// linkTimeout is how long the radio may stay silent before the link is
+	// treated as lost. A healthy TH-D75 answers GET_STATUS every 250ms.
+	linkTimeout = 10 * time.Second
+	// reopenInterval is the wait between attempts to reopen a lost port.
+	reopenInterval = 2 * time.Second
+	// modemInitDelay is the settle time after opening the port (per MMDVMHost).
+	modemInitDelay = 2 * time.Second
+)
 
 // NewMMDVMRadio returns a new, unopened MMDVMRadio.
 func NewMMDVMRadio() *MMDVMRadio {
 	return &MMDVMRadio{
-		hdrCh: make(chan dstar.DVHeader, 8),
-		frmCh: make(chan dstar.DVFrame, 32),
+		hdrCh:  make(chan dstar.DVHeader, 8),
+		frmCh:  make(chan dstar.DVFrame, 32),
+		downCh: make(chan struct{}, 1),
 	}
 }
 
@@ -66,16 +88,46 @@ func (r *mmdvmPortReader) Read(p []byte) (int, error) {
 var errMmdvmTimeout = fmt.Errorf("mmdvm: read timeout")
 
 func (m *MMDVMRadio) Open(cfg Config) error {
-	// Port setup runs under the lock, but the lock is released before the
-	// slow handshake below. Holding m.mu across the handshake would let a
-	// wedged Read (see handshakeWatchdog) block Close() forever, freezing
-	// the whole app with no way to cancel.
 	waitForProbe()
 	m.mu.Lock()
 	if m.open {
 		m.mu.Unlock()
 		return fmt.Errorf("mmdvm: already open")
 	}
+	m.cfg = cfg
+	m.open = true
+	m.stopCh = make(chan struct{})
+	m.mu.Unlock()
+
+	// The first connection's errors go back to the caller; after that the
+	// supervisor keeps the link alive across radio power cycles and
+	// Bluetooth/USB disconnects.
+	if err := m.connect(); err != nil {
+		m.mu.Lock()
+		m.open = false
+		m.mu.Unlock()
+		return err
+	}
+	m.supDone = make(chan struct{})
+	go m.supervise()
+	return nil
+}
+
+// connect opens the port, runs the MMDVM handshake and starts the session's
+// read and status loops.
+//
+// Port setup runs under the lock, but the lock is released before the slow
+// handshake. Holding m.mu across the handshake would let a wedged Read (see
+// handshakeWatchdog) block Close() forever, freezing the whole app with no
+// way to cancel.
+func (m *MMDVMRadio) connect() error {
+	m.mu.Lock()
+	if !m.open {
+		m.mu.Unlock()
+		return fmt.Errorf("mmdvm: closed")
+	}
+	cfg := m.cfg
+	m.mu.Unlock()
 
 	// MMDVM protocol always uses 115200 baud (confirmed by BlueDV pcap).
 	mode := &serial.Mode{
@@ -86,7 +138,6 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	}
 	p, err := serial.Open(cfg.Port, mode)
 	if err != nil {
-		m.mu.Unlock()
 		return fmt.Errorf("mmdvm: open %s: %w", cfg.Port, err)
 	}
 	// Set DTR high — required for TH-D75 (confirmed by BlueDV docs).
@@ -98,18 +149,22 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 		log.Printf("mmdvm: warning: SetRTS failed: %v", err)
 	}
 
+	m.mu.Lock()
+	if !m.open { // Close() ran while serial.Open was blocked
+		m.mu.Unlock()
+		p.Close() //nolint:errcheck
+		return fmt.Errorf("mmdvm: closed")
+	}
 	m.port = p
-	m.cfg = cfg
-	m.open = true
-	m.stopCh = make(chan struct{})
-	log.Printf("mmdvm: opened %s", cfg.Port)
 	m.mu.Unlock()
+	log.Printf("mmdvm: opened %s", cfg.Port)
 
 	// Give the modem time to initialize after port opens (per MMDVMHost).
-	log.Printf("mmdvm: waiting 2s for modem to initialize…")
-	time.Sleep(2 * time.Second)
+	log.Printf("mmdvm: waiting %s for modem to initialize…", modemInitDelay)
+	time.Sleep(modemInitDelay)
 
 	// Drain any bytes the modem may have sent during the init delay.
+	m.rxSinceConnect.Store(false)
 	m.drainPort()
 
 	// Watchdog: if the handshake wedges (macOS BT SPP can block Read forever),
@@ -134,7 +189,8 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	// Attempt MMDVM handshake: GET_VERSION → SET_FREQ → SET_CONFIG.
 	// If the handshake fails, log the error but continue anyway —
 	// the radio may not require a full handshake and might start
-	// responding once we begin sending status polls.
+	// responding once we begin sending status polls. If it stays silent,
+	// the supervisor reopens the port after linkTimeout.
 	hsErr := m.handshake()
 	close(handshakeDone)
 
@@ -143,25 +199,124 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	// re-enable Connect instead of leaving loops running on a dead port.
 	m.mu.Lock()
 	if watchdogFired.Load() || !m.open {
-		m.open = false
-		m.port = nil
+		if m.port == p {
+			m.port = nil
+		}
 		m.mu.Unlock()
+		p.Close() //nolint:errcheck
 		return fmt.Errorf("mmdvm: radio did not respond within %s — aborted (check the radio is in Reflector TERM mode and reachable, or connect via USB-C; macOS Bluetooth SPP can stall)", handshakeWatchdog)
 	}
 	m.mu.Unlock()
 
 	if hsErr != nil {
 		log.Printf("mmdvm: handshake failed: %v — continuing with status polling", hsErr)
+	} else {
+		m.rxSinceConnect.Store(true)
 	}
 
+	// Count the silence timeout from the start of the session, and discard
+	// a stale dead-port signal from a previous one.
+	m.lastRx.Store(time.Now().UnixNano())
+	select {
+	case <-m.downCh:
+	default:
+	}
+
+	// Register the session under the lock so a concurrent Close() either
+	// sees it (and stops it) or we see the radio closed.
+	sessStop := make(chan struct{})
+	m.mu.Lock()
+	if !m.open {
+		m.mu.Unlock()
+		p.Close() //nolint:errcheck
+		return fmt.Errorf("mmdvm: closed")
+	}
+	m.sessStop = sessStop
 	m.wg.Add(2)
-	go m.readLoop()
-	go m.statusLoop()
+	m.mu.Unlock()
+	go m.readLoop(p, sessStop)
+	go m.statusLoop(p, sessStop)
 
 	// After starting the read/status loops, log what we're doing so the user
 	// knows the radio is being polled even if the handshake failed.
 	log.Printf("mmdvm: readLoop and statusLoop started — listening for radio data")
 	return nil
+}
+
+// endSession stops the current session's loops and closes its port.
+func (m *MMDVMRadio) endSession() {
+	m.mu.Lock()
+	if m.sessStop != nil {
+		close(m.sessStop)
+		m.sessStop = nil
+	}
+	if m.port != nil {
+		m.port.Close() //nolint:errcheck
+		m.port = nil
+	}
+	m.mu.Unlock()
+	// Wait for goroutines to exit after releasing the lock (they need it).
+	m.wg.Wait()
+}
+
+// supervise watches the link and reconnects when the port dies (radio
+// unplugged, Bluetooth dropped) or the radio stops answering status polls.
+// The link only counts as restored once the radio actually sends data, so a
+// radio that stays silent after a reopen produces one message, not a stream.
+func (m *MMDVMRadio) supervise() {
+	defer close(m.supDone)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	down := false
+	for {
+		var msg string
+		select {
+		case <-m.stopCh:
+			return
+		case <-m.downCh:
+			log.Printf("mmdvm: port lost")
+			msg = "Radio disconnected — reconnecting…"
+		case <-ticker.C:
+			if down && m.rxSinceConnect.Load() {
+				down = false
+				log.Printf("mmdvm: radio responding again")
+				m.notify("Radio reconnected.")
+			}
+			silent := time.Since(time.Unix(0, m.lastRx.Load()))
+			if silent < linkTimeout {
+				continue
+			}
+			log.Printf("mmdvm: no data from radio for %s — reopening port", silent.Round(time.Second))
+			msg = "Radio not responding — reconnecting…"
+		}
+
+		m.endSession()
+		if !down {
+			down = true
+			m.notify(msg)
+		}
+		for attempt := 1; ; attempt++ {
+			select {
+			case <-m.stopCh:
+				return
+			case <-time.After(reopenInterval):
+			}
+			err := m.connect()
+			if err == nil {
+				break
+			}
+			if attempt == 1 || attempt%15 == 0 {
+				log.Printf("mmdvm: reconnect attempt %d: %v", attempt, err)
+			}
+		}
+		log.Printf("mmdvm: port reopened")
+	}
+}
+
+func (m *MMDVMRadio) notify(msg string) {
+	if m.Notify != nil {
+		m.Notify(msg)
+	}
 }
 
 // reader returns a timeout-aware io.Reader wrapping the serial port.
@@ -323,12 +478,20 @@ func (m *MMDVMRadio) Close() error {
 		return nil
 	}
 	close(m.stopCh)
-	err := m.port.Close()
 	m.open = false
 	m.mu.Unlock()
-	// Wait for goroutines to exit after releasing the lock (they need it).
-	m.wg.Wait()
-	return err
+	m.endSession()
+	// The supervisor may be inside a blocking serial.Open (macOS Bluetooth
+	// can stall there for a minute). It notices m.open == false and closes
+	// that port itself, so wait only briefly rather than freeze the caller.
+	if m.supDone != nil {
+		select {
+		case <-m.supDone:
+		case <-time.After(3 * time.Second):
+			log.Printf("mmdvm: close: supervisor still reconnecting; leaving it to exit")
+		}
+	}
+	return nil
 }
 
 func (m *MMDVMRadio) IsOpen() bool {
@@ -343,6 +506,11 @@ func (m *MMDVMRadio) SendHeader(hdr dstar.DVHeader) error {
 	if !m.open {
 		return fmt.Errorf("mmdvm: port not open")
 	}
+	if m.port == nil {
+		// Link down; the supervisor is reconnecting and the user has been
+		// told. Drop the frame rather than flood the log with errors.
+		return nil
+	}
 	return mmdvmWriteDStarHeader(m.port, hdr)
 }
 
@@ -351,6 +519,11 @@ func (m *MMDVMRadio) SendFrame(f dstar.DVFrame) error {
 	defer m.mu.Unlock()
 	if !m.open {
 		return fmt.Errorf("mmdvm: port not open")
+	}
+	if m.port == nil {
+		// Link down; the supervisor is reconnecting and the user has been
+		// told. Drop the frame rather than flood the log with errors.
+		return nil
 	}
 	if err := mmdvmWriteDStarData(m.port, f); err != nil {
 		return err
@@ -374,10 +547,10 @@ func (m *MMDVMRadio) PTT(bool) error {
 
 // readLoop runs in a background goroutine, reading MMDVM frames and
 // dispatching D-STAR headers/voice to the RX channels.
-func (m *MMDVMRadio) readLoop() {
+func (m *MMDVMRadio) readLoop(port serial.Port, stop <-chan struct{}) {
 	defer m.wg.Done()
 	log.Printf("mmdvm: readLoop started")
-	r := m.reader()
+	r := &mmdvmPortReader{port: port}
 	firstStatus := false
 
 	// dstarSeq tracks the D-STAR slow-data sequence number (0–20) within the
@@ -390,7 +563,7 @@ func (m *MMDVMRadio) readLoop() {
 
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stop:
 			return
 		default:
 		}
@@ -398,20 +571,28 @@ func (m *MMDVMRadio) readLoop() {
 		frm, err := mmdvmReadFrame(r)
 		if err != nil {
 			select {
-			case <-m.stopCh:
+			case <-stop:
 				return
 			default:
 			}
+			if err == errMmdvmTimeout {
+				continue
+			}
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				log.Printf("mmdvm: port closed")
-				return
-			}
-			// Don't spam timeout errors during normal operation.
-			if err != errMmdvmTimeout {
+			} else {
+				// Disconnects surface as a PortClosed error from the serial
+				// library; retrying the read would spin on a dead port.
 				log.Printf("mmdvm: read error: %v", err)
 			}
-			continue
+			select {
+			case m.downCh <- struct{}{}:
+			default:
+			}
+			return
 		}
+		m.lastRx.Store(time.Now().UnixNano())
+		m.rxSinceConnect.Store(true)
 
 		switch frm.cmd {
 		case mmdvmGetStatus:
@@ -493,23 +674,29 @@ func (m *MMDVMRadio) readLoop() {
 }
 
 // statusLoop sends GET_STATUS every 250ms as a keepalive.
-func (m *MMDVMRadio) statusLoop() {
+func (m *MMDVMRadio) statusLoop(port serial.Port, stop <-chan struct{}) {
 	defer m.wg.Done()
 	log.Printf("mmdvm: statusLoop started")
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	failures := 0
 	for {
 		select {
-		case <-m.stopCh:
+		case <-stop:
 			return
 		case <-ticker.C:
 			m.mu.Lock()
-			if m.open {
-				if err := mmdvmWriteGetStatus(m.port); err != nil {
+			err := mmdvmWriteGetStatus(port)
+			m.mu.Unlock()
+			if err != nil {
+				// Log the first failure only; the supervisor handles recovery.
+				if failures == 0 {
 					log.Printf("mmdvm: status poll error: %v", err)
 				}
+				failures++
+			} else {
+				failures = 0
 			}
-			m.mu.Unlock()
 		}
 	}
 }

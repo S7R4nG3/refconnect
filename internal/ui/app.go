@@ -489,7 +489,9 @@ func (a *App) openRadio(portName string) {
 	a.radioBusy.Store(true)
 	var r radio.RadioInterface
 	if a.cfg.Radio.Protocol == "MMDVM" {
-		r = radio.NewMMDVMRadio()
+		m := radio.NewMMDVMRadio()
+		m.Notify = a.appendLog
+		r = m
 	} else {
 		r = radio.NewSerialRadio()
 	}
