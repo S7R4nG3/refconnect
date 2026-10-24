@@ -49,6 +49,18 @@ func DecodeHeader(raw [HeaderBytes]byte) (DVHeader, error) {
 	return decodeHeaderFields(raw), nil
 }
 
+// DecodeNetworkHeader parses a 41-byte header received from a reflector.
+// Like DecodeHeader it rejects a wrong CRC, but it accepts the placeholder
+// values 0x0000 and 0xFFFF: xlxd and other reflectors forward headers
+// without computing the CRC, leaving the field zeroed.
+func DecodeNetworkHeader(raw [HeaderBytes]byte) (DVHeader, error) {
+	stored := binary.LittleEndian.Uint16(raw[39:41])
+	if stored == 0x0000 || stored == 0xFFFF {
+		return decodeHeaderFields(raw), nil
+	}
+	return DecodeHeader(raw)
+}
+
 // DecodeHeaderNoCRC parses a 41-byte wire header without validating the CRC.
 // Used by protocols like DCS where the reflector may regenerate headers with
 // a different CRC algorithm.

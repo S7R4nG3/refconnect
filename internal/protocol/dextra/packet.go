@@ -140,7 +140,7 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 		}
 		var raw [dstar.HeaderBytes]byte
 		copy(raw[:], data[15:56])
-		h, err := dstar.DecodeHeader(raw)
+		h, err := dstar.DecodeNetworkHeader(raw)
 		if err != nil {
 			return nil, nil, err
 		}

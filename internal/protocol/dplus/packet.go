@@ -168,7 +168,7 @@ func parsePacket(buf []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 		// D-STAR header at buf[17:58] (41 bytes including CRC)
 		var raw [dstar.HeaderBytes]byte
 		copy(raw[:], buf[17:58])
-		h, err := dstar.DecodeHeader(raw)
+		h, err := dstar.DecodeNetworkHeader(raw)
 		if err != nil {
 			return nil, nil, err
 		}
