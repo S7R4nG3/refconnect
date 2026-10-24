@@ -94,3 +94,41 @@ func TestLabel(t *testing.T) {
 		t.Errorf("non-USB Label() = %q, want %q", got, want)
 	}
 }
+
+func TestClassifyBluetooth(t *testing.T) {
+	tests := []struct {
+		btName       string
+		wantModel    string
+		wantProtocol string
+		wantLabel    string
+	}{
+		{"TH-D75", "Kenwood TH-D75", ProtocolMMDVM, "Kenwood TH-D75 · Bluetooth (rfcomm0)"},
+		{"th-d75 shack", "Kenwood TH-D75", ProtocolMMDVM, "Kenwood TH-D75 · Bluetooth (rfcomm0)"},
+		{"ID-52PLUS", "Icom ID-52", ProtocolDVGateway, "Icom ID-52 · Bluetooth (rfcomm0)"},
+		{"Pixel 7", "", "", "Pixel 7 · Bluetooth (rfcomm0)"},
+		{"", "", "", "Bluetooth device AA:BB:CC:DD:EE:FF (rfcomm0)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.btName, func(t *testing.T) {
+			p := DetectedPort{Name: "/dev/rfcomm0", Bluetooth: true, BTAddr: "AA:BB:CC:DD:EE:FF", BTName: tt.btName}
+			classifyBluetooth(&p)
+			if p.Model != tt.wantModel || p.Protocol != tt.wantProtocol {
+				t.Errorf("got model=%q protocol=%q, want %q %q", p.Model, p.Protocol, tt.wantModel, tt.wantProtocol)
+			}
+			if got := p.Label(); got != tt.wantLabel {
+				t.Errorf("Label() = %q, want %q", got, tt.wantLabel)
+			}
+		})
+	}
+
+	// The same radio on USB outranks it on Bluetooth.
+	usb := DetectedPort{Name: "/dev/ttyACM0", IsUSB: true, VID: "2166", PID: "9023"}
+	bt := DetectedPort{Name: "/dev/rfcomm0", Bluetooth: true, BTName: "TH-D75"}
+	classify(&usb, 0)
+	classifyBluetooth(&bt)
+	ports := []DetectedPort{bt, usb}
+	SortPorts(ports)
+	if ports[0].Name != usb.Name {
+		t.Errorf("best port = %s, want USB %s", ports[0].Name, usb.Name)
+	}
+}

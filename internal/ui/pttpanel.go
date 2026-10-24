@@ -254,7 +254,11 @@ func (s *portScanner) updateHint() {
 	case sel.Verified:
 		text = sel.Model + " is connected and responding."
 	case sel.Protocol == radio.ProtocolMMDVM:
-		text = sel.Model + " found. Put it in Reflector TERM mode (Menu 650) before connecting."
+		link := "USB"
+		if sel.Bluetooth {
+			link = "Bluetooth"
+		}
+		text = sel.Model + " found. Put it in Reflector TERM mode (Menu 650) with Menu 985 set to " + link + " before connecting."
 	case sel.Role == radio.RoleCIV:
 		text = "This is the radio's CI-V control port. Choose its DV data port instead."
 	case s.failed[sel.Name]:

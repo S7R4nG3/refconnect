@@ -47,6 +47,9 @@ type DetectedPort struct {
 	VID, PID     string // upper-case hex, "" for non-USB ports
 	SerialNumber string
 	Product      string // USB product string, when the OS reports it
+	Bluetooth    bool   // Bluetooth serial port (Linux rfcomm)
+	BTAddr       string // remote Bluetooth address, when known
+	BTName       string // remote Bluetooth device name, when known
 	Verified     bool   // radio answered a DV Gateway poll on this port
 	Score        int    // higher = more likely the radio's DV data port
 }
@@ -58,8 +61,16 @@ func (p DetectedPort) Label() string {
 	switch {
 	case p.Model != "" && p.Role != "":
 		desc = p.Model + " · " + p.Role
+	case p.Model != "" && p.Bluetooth:
+		desc = p.Model + " · Bluetooth"
 	case p.Model != "":
 		desc = p.Model
+	case p.Bluetooth && p.BTName != "":
+		desc = p.BTName + " · Bluetooth"
+	case p.Bluetooth && p.BTAddr != "":
+		desc = "Bluetooth device " + p.BTAddr
+	case p.Bluetooth:
+		desc = "Bluetooth device"
 	case p.IsUSB && p.Product != "":
 		desc = p.Product
 	case p.IsUSB:
@@ -162,6 +173,48 @@ func classify(p *DetectedPort, ifNum int) {
 	}
 }
 
+// btDevice is the remote end of a Bluetooth serial port.
+type btDevice struct {
+	Addr string // e.g. "AA:BB:CC:DD:EE:FF"
+	Name string // BlueZ alias/name, e.g. "TH-D75"
+}
+
+// bluetoothModels maps a substring of a Bluetooth device name to the radio.
+// Only radios whose Bluetooth link carries their terminal-mode protocol.
+var bluetoothModels = []knownRadio{
+	{vid: "TH-D75", model: "Kenwood TH-D75", protocol: ProtocolMMDVM},
+	{vid: "IC-705", model: "Icom IC-705", protocol: ProtocolDVGateway},
+	{vid: "ID-52", model: "Icom ID-52", protocol: ProtocolDVGateway},
+	{vid: "ID-50", model: "Icom ID-50", protocol: ProtocolDVGateway},
+}
+
+// classifyBluetooth identifies a radio from its Bluetooth device name.
+// Bluetooth scores just below the same radio on USB, which is more reliable.
+func classifyBluetooth(p *DetectedPort) {
+	name := strings.ToUpper(p.BTName)
+	for _, k := range bluetoothModels {
+		if strings.Contains(name, k.vid) {
+			p.Model, p.Protocol = k.model, k.protocol
+			p.Score = 45
+			return
+		}
+	}
+	p.Score = 5
+}
+
+// applyBluetooth fills in Bluetooth details for a non-USB port, if it is one.
+func applyBluetooth(p *DetectedPort) {
+	if p.IsUSB {
+		return
+	}
+	bt, ok := bluetoothInfo(p.Name)
+	if !ok {
+		return
+	}
+	p.Bluetooth, p.BTAddr, p.BTName = true, bt.Addr, bt.Name
+	classifyBluetooth(p)
+}
+
 // hiddenPorts are macOS pseudo-ports that are never a radio.
 var hiddenPorts = []string{"Bluetooth-Incoming-Port", "debug-console", "wlan-debug"}
 
@@ -228,6 +281,7 @@ func DetectPorts() []DetectedPort {
 			Product:      d.Product,
 		}
 		classify(&p, interfaceNumber(d.Name))
+		applyBluetooth(&p)
 		ports = append(ports, p)
 	}
 
@@ -238,7 +292,9 @@ func DetectPorts() []DetectedPort {
 			continue
 		}
 		seen[n] = true
-		ports = append(ports, DetectedPort{Name: n})
+		p := DetectedPort{Name: n}
+		applyBluetooth(&p)
+		ports = append(ports, p)
 	}
 
 	SortPorts(ports)
