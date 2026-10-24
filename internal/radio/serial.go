@@ -35,6 +35,7 @@ func NewSerialRadio() *SerialRadio {
 }
 
 func (r *SerialRadio) Open(cfg Config) error {
+	waitForProbe()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.open {

@@ -70,6 +70,7 @@ func (m *MMDVMRadio) Open(cfg Config) error {
 	// slow handshake below. Holding m.mu across the handshake would let a
 	// wedged Read (see handshakeWatchdog) block Close() forever, freezing
 	// the whole app with no way to cancel.
+	waitForProbe()
 	m.mu.Lock()
 	if m.open {
 		m.mu.Unlock()

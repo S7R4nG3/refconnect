@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -41,6 +42,10 @@ type App struct {
 	reflectorCall   string // reflector D-STAR callsign (e.g. "REF001")
 	rt              *router.Router
 	irc             *ircddb.Client
+
+	// radioBusy is set while the radio is opening or open, pausing the
+	// background port scanner so its probes never touch a live port.
+	radioBusy atomic.Bool
 
 	// Shared data bindings updated from any goroutine, consumed by widgets.
 	statusText  binding.String
@@ -481,6 +486,7 @@ func (a *App) sendBeacon() {
 
 // openRadio opens the serial port for the radio.
 func (a *App) openRadio(portName string) {
+	a.radioBusy.Store(true)
 	var r radio.RadioInterface
 	if a.cfg.Radio.Protocol == "MMDVM" {
 		r = radio.NewMMDVMRadio()
@@ -491,6 +497,7 @@ func (a *App) openRadio(portName string) {
 		Port: portName,
 	}
 	if err := r.Open(cfg); err != nil {
+		a.radioBusy.Store(false)
 		a.appendLog("Radio open error: " + err.Error())
 		return
 	}
@@ -513,6 +520,7 @@ func (a *App) closeRadio() {
 		a.radio = nil
 		a.appendLog("Radio closed.")
 	}
+	a.radioBusy.Store(false)
 }
 
 // ptt asserts or releases PTT.
