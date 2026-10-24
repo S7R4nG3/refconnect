@@ -124,7 +124,7 @@ func (s *portScanner) logPorts(ports []radio.DetectedPort) {
 	var b strings.Builder
 	b.WriteString("ports:") // never equals the initial empty lastLog, so an empty list is logged too
 	for _, p := range ports {
-		b.WriteString(p.Name + "|" + p.VID + ":" + p.PID + "|" + p.SerialNumber + "\n")
+		b.WriteString(p.Name + "|" + p.VID + ":" + p.PID + "|" + p.SerialNumber + "|" + p.BTName + "\n")
 	}
 	if b.String() == s.lastLog {
 		return
@@ -132,8 +132,8 @@ func (s *portScanner) logPorts(ports []radio.DetectedPort) {
 	s.lastLog = b.String()
 	log.Printf("detect: %d serial port(s):", len(ports))
 	for _, p := range ports {
-		log.Printf("detect:   %-32s usb=%v vid:pid=%s:%s serial=%q product=%q model=%q role=%q score=%d",
-			p.Name, p.IsUSB, p.VID, p.PID, p.SerialNumber, p.Product, p.Model, p.Role, p.Score)
+		log.Printf("detect:   %-32s usb=%v vid:pid=%s:%s serial=%q product=%q bt=%v bt_addr=%s bt_name=%q model=%q role=%q score=%d",
+			p.Name, p.IsUSB, p.VID, p.PID, p.SerialNumber, p.Product, p.Bluetooth, p.BTAddr, p.BTName, p.Model, p.Role, p.Score)
 	}
 }
 
