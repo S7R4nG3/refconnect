@@ -3,8 +3,10 @@
 package router
 
 import (
+	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/S7R4nG3/refconnect/internal/aprs"
 	"github.com/S7R4nG3/refconnect/internal/beacon"
@@ -27,7 +29,22 @@ type Event struct {
 	Header    *dstar.DVHeader // non-nil when a new transmission starts
 	Frame     *dstar.DVFrame  // non-nil for voice frames
 	Err       error
+
+	// Delivered (RX only) reports that the header or voice frame was written
+	// to the radio, and for a frame, that this transmission's header was
+	// too, so the radio should be playing it.
+	Delivered bool
+	// Note is an informational message for the activity log.
+	Note string
 }
+
+// rxStreamGap is the silence after which the next RX voice frame is treated
+// as a new transmission (a stream that ended without an end-of-stream frame).
+var rxStreamGap = time.Second
+
+// noteNoHeader is logged once per transmission when reflector voice reaches
+// the radio without a header, e.g. one dropped for a bad CRC.
+const noteNoHeader = "Receiving voice from the reflector without a valid header — the radio may not play it."
 
 // Config controls router behaviour.
 type Config struct {
@@ -83,6 +100,11 @@ type Router struct {
 	// nothing. Reset on each header.
 	slowDump    []byte
 	gotFixThisTX bool
+
+	// RX transmission state, owned by rxLoop.
+	rxHeaderDelivered bool      // this transmission's header reached the radio
+	rxNoHeaderNoted   bool      // noteNoHeader already sent for this transmission
+	rxLastFrame       time.Time // when the last RX header or frame arrived
 
 	// txText holds pre-scrambled slow data for a 20-char D-STAR text
 	// message injected into every outgoing superframe. This appears as
@@ -339,26 +361,65 @@ func (rt *Router) rxLoop() {
 			}
 			log.Printf("router: RX header from reflector: MYCALL=%q URCALL=%q RPT1=%q RPT2=%q",
 				hdr.MyCall, hdr.YourCall, hdr.RPT1, hdr.RPT2)
-			if rt.radio.IsOpen() {
-				if err := rt.radio.SendHeader(hdr); err != nil {
-					rt.emit(Event{Direction: DirRX, Err: err})
-				}
-			}
+			delivered := rt.deliverRX(func() error { return rt.radio.SendHeader(hdr) })
+			rt.rxHeaderDelivered = delivered
+			rt.rxNoHeaderNoted = false
+			rt.rxLastFrame = time.Now()
 			h := hdr
-			rt.emit(Event{Direction: DirRX, Header: &h})
+			rt.emit(Event{Direction: DirRX, Header: &h, Delivered: delivered})
 
 		case frm, ok := <-rt.reflector.RxFrames():
 			if !ok {
 				return
 			}
-			if rt.radio.IsOpen() {
-				if err := rt.radio.SendFrame(frm); err != nil {
-					rt.emit(Event{Direction: DirRX, Err: err})
-				}
+			if time.Since(rt.rxLastFrame) > rxStreamGap {
+				// A new transmission whose header never arrived.
+				rt.rxHeaderDelivered = false
+				rt.rxNoHeaderNoted = false
 			}
+			rt.rxLastFrame = time.Now()
+
+			sent := rt.deliverRX(func() error { return rt.radio.SendFrame(frm) })
 			f := frm
-			rt.emit(Event{Direction: DirRX, Frame: &f})
+			evt := Event{Direction: DirRX, Frame: &f, Delivered: sent && rt.rxHeaderDelivered}
+			if sent && !rt.rxHeaderDelivered && !rt.rxNoHeaderNoted {
+				rt.rxNoHeaderNoted = true
+				log.Printf("router: RX voice reaching radio without a delivered header")
+				evt.Note = noteNoHeader
+			}
+			if frm.End {
+				rt.rxHeaderDelivered = false
+				rt.rxNoHeaderNoted = false
+			}
+			if evt.Note != "" {
+				rt.emitWait(evt) // don't let a full queue drop the note
+			} else {
+				rt.emit(evt)
+			}
 		}
+	}
+}
+
+// deliverRX sends to the radio if it is open, reporting whether the write
+// happened. A temporarily unusable link (radio.ErrLinkDown) isn't an error:
+// the radio reports its own link state.
+func (rt *Router) deliverRX(send func() error) bool {
+	if !rt.radio.IsOpen() {
+		return false
+	}
+	err := send()
+	if err != nil && !errors.Is(err, radio.ErrLinkDown) {
+		rt.emit(Event{Direction: DirRX, Err: err})
+	}
+	return err == nil
+}
+
+// emitWait is emit for events that must not be dropped; it blocks until the
+// UI takes the event or the router stops.
+func (rt *Router) emitWait(e Event) {
+	select {
+	case <-rt.stopCh:
+	case rt.eventCh <- e:
 	}
 }
 

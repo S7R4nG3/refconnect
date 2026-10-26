@@ -4,6 +4,7 @@ package radio
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -155,9 +156,9 @@ func TestMMDVMCloseDuringReconnect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no link-lost notification")
 	}
-	// Frames sent while the link is down are dropped quietly.
-	if err := r.SendHeader(dstar.DVHeader{MyCall: "N0CALL  ", YourCall: "CQCQCQ  "}); err != nil {
-		t.Errorf("SendHeader while link down: %v", err)
+	// Frames sent while the link is down are dropped and reported as such.
+	if err := r.SendHeader(dstar.DVHeader{MyCall: "N0CALL  ", YourCall: "CQCQCQ  "}); !errors.Is(err, ErrLinkDown) {
+		t.Errorf("SendHeader while link down = %v, want ErrLinkDown", err)
 	}
 
 	done := make(chan struct{})
@@ -186,11 +187,11 @@ func TestMMDVMDropsFramesUntilSessionStarts(t *testing.T) {
 	r.open = true
 	r.port = port // port open, handshake still running: no session yet
 
-	if err := r.SendHeader(dstar.DVHeader{MyCall: "N0CALL  ", YourCall: "CQCQCQ  "}); err != nil {
-		t.Fatalf("SendHeader: %v", err)
+	if err := r.SendHeader(dstar.DVHeader{MyCall: "N0CALL  ", YourCall: "CQCQCQ  "}); !errors.Is(err, ErrLinkDown) {
+		t.Fatalf("SendHeader = %v, want ErrLinkDown", err)
 	}
-	if err := r.SendFrame(dstar.DVFrame{}); err != nil {
-		t.Fatalf("SendFrame: %v", err)
+	if err := r.SendFrame(dstar.DVFrame{}); !errors.Is(err, ErrLinkDown) {
+		t.Fatalf("SendFrame = %v, want ErrLinkDown", err)
 	}
 	if n := port.writes.Load(); n != 0 {
 		t.Fatalf("%d writes reached the radio before its session started", n)

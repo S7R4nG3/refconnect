@@ -4,8 +4,15 @@
 package radio
 
 import (
+	"errors"
+
 	"github.com/S7R4nG3/refconnect/internal/dstar"
 )
+
+// ErrLinkDown is returned by SendHeader/SendFrame when the radio is open but
+// its link is temporarily unusable (reconnecting, or mid-handshake). The
+// frame was not delivered; callers shouldn't report it as an error.
+var ErrLinkDown = errors.New("radio: link down")
 
 // Config holds the parameters needed to open a serial port.
 // Baud rate is determined by the radio implementation (38400 for DV Gateway, 115200 for MMDVM).

@@ -512,8 +512,8 @@ func (m *MMDVMRadio) SendHeader(hdr dstar.DVHeader) error {
 	if m.port == nil || m.sessStop == nil {
 		// Link down, or a reconnect is still mid-handshake: the radio isn't
 		// in D-STAR mode yet. Drop the frame rather than send it audio it
-		// can't use (or flood the log with errors).
-		return nil
+		// can't use.
+		return ErrLinkDown
 	}
 	return mmdvmWriteDStarHeader(m.port, hdr)
 }
@@ -527,8 +527,8 @@ func (m *MMDVMRadio) SendFrame(f dstar.DVFrame) error {
 	if m.port == nil || m.sessStop == nil {
 		// Link down, or a reconnect is still mid-handshake: the radio isn't
 		// in D-STAR mode yet. Drop the frame rather than send it audio it
-		// can't use (or flood the log with errors).
-		return nil
+		// can't use.
+		return ErrLinkDown
 	}
 	if err := mmdvmWriteDStarData(m.port, f); err != nil {
 		return err

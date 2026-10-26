@@ -553,12 +553,23 @@ func (a *App) startRouter() {
 	rt.Start()
 
 	go func() {
-		// rxTimeout clears the RX indicator when a remote station drops
-		// off abruptly without sending an end-of-stream frame.
+		// The RX indicator means "voice is being delivered to the radio": it
+		// follows frames the router actually wrote to the radio after their
+		// header, not traffic merely arriving from the reflector, so a dark
+		// indicator during reflector activity points at the radio path.
+		// rxTimeout clears it when delivery stops without an end-of-stream
+		// frame.
 		const rxTimeoutDur = 1500 * time.Millisecond
 		rxTimer := time.NewTimer(rxTimeoutDur)
 		rxTimer.Stop() // not active until RX starts
 		defer rxTimer.Stop()
+		rxOn := false
+		setRX := func(on bool) {
+			if on != rxOn {
+				rxOn = on
+				fyne.Do(func() { a.rxActive.Set(on) }) //nolint:errcheck
+			}
+		}
 
 		for {
 			select {
@@ -569,6 +580,9 @@ func (a *App) startRouter() {
 				if evt.Err != nil {
 					a.appendLog("Router error: " + evt.Err.Error())
 					continue
+				}
+				if evt.Note != "" {
+					a.appendLog(evt.Note)
 				}
 				if evt.Header != nil {
 					who := evt.Header.MyCall
@@ -581,21 +595,19 @@ func (a *App) startRouter() {
 						}
 					}
 					a.appendLog(fmt.Sprintf("%s header: %s → %s", dir, who, evt.Header.YourCall))
-					if evt.Direction == router.DirRX {
-						fyne.Do(func() { a.rxActive.Set(true) }) //nolint:errcheck
-						rxTimer.Reset(rxTimeoutDur)
-					} else {
+					if evt.Direction == router.DirTX {
 						fyne.Do(func() { a.txActive.Set(true) }) //nolint:errcheck
 					}
 				}
 				if evt.Frame != nil {
-					if evt.Direction == router.DirRX {
+					if evt.Direction == router.DirRX && evt.Delivered {
+						setRX(true)
 						rxTimer.Reset(rxTimeoutDur)
 					}
 					if evt.Frame.End {
 						if evt.Direction == router.DirRX {
 							rxTimer.Stop()
-							fyne.Do(func() { a.rxActive.Set(false) }) //nolint:errcheck
+							setRX(false)
 						} else {
 							fyne.Do(func() { a.txActive.Set(false) }) //nolint:errcheck
 						}
@@ -603,8 +615,8 @@ func (a *App) startRouter() {
 				}
 
 			case <-rxTimer.C:
-				log.Printf("ui: RX activity timeout — clearing indicator")
-				fyne.Do(func() { a.rxActive.Set(false) }) //nolint:errcheck
+				log.Printf("ui: RX delivery stopped — clearing indicator")
+				setRX(false)
 			}
 		}
 	}()
