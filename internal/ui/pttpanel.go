@@ -2,6 +2,7 @@ package ui
 
 import (
 	"log"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -19,8 +20,11 @@ const noPortsLabel = "(no ports found)"
 
 const (
 	scanInterval = 3 * time.Second
-	probeTimeout = 1500 * time.Millisecond
-	reprobeAfter = 15 * time.Second
+	// busyHintAfter is how long a port may stay busy before we blame
+	// another program; ModemManager holds new ports for up to ~30s.
+	busyHintAfter = 30 * time.Second
+	probeTimeout  = 1500 * time.Millisecond
+	reprobeAfter  = 15 * time.Second
 )
 
 // portScanner keeps the port selector in sync with attached radios: it
@@ -33,14 +37,18 @@ type portScanner struct {
 	hint       *widget.Label
 
 	// Scan goroutine state, guarded by scanMu.
-	scanMu   sync.Mutex
-	verified map[string]bool      // ports that answered a probe
-	probed   map[string]time.Time // last failed probe per port
-	lastLog  string               // port list last written to the log
+	scanMu    sync.Mutex
+	verified  map[string]bool      // ports that answered a probe
+	probed    map[string]time.Time // last failed probe per port
+	busySince map[string]time.Time // ports another program had open at last probe
+	denied    map[string]bool      // ports we lack permission to open
+	lastLog   string               // port list last written to the log
 
 	// UI-thread state.
 	ports      []radio.DetectedPort
 	failed     map[string]bool // ports whose last probe got no answer
+	busyLong   map[string]bool // ports busy for longer than busyHintAfter
+	deniedUI   map[string]bool // ports we lack permission to open
 	userPicked string          // port the user chose by hand this session
 	updating   bool            // suppresses OnChanged during programmatic updates
 }
@@ -56,6 +64,8 @@ func (s *portScanner) scan(force bool) {
 	if force {
 		s.verified = map[string]bool{}
 		s.probed = map[string]time.Time{}
+		s.busySince = map[string]time.Time{}
+		s.denied = map[string]bool{}
 	}
 
 	ports := radio.DetectPorts()
@@ -77,6 +87,16 @@ func (s *portScanner) scan(force bool) {
 			delete(s.probed, name)
 		}
 	}
+	for name := range s.busySince {
+		if !present[name] {
+			delete(s.busySince, name)
+		}
+	}
+	for name := range s.denied {
+		if !present[name] {
+			delete(s.denied, name)
+		}
+	}
 	radio.SortPorts(ports)
 	s.logPorts(ports)
 	s.publish(ports)
@@ -94,6 +114,26 @@ func (s *portScanner) scan(force bool) {
 			return
 		}
 		ok, err := radio.ProbeDVGateway(p.Name, probeTimeout)
+		if radio.IsPortBusy(err) {
+			// Not an answer either way: retry on the next scan.
+			if _, seen := s.busySince[p.Name]; !seen {
+				s.busySince[p.Name] = time.Now()
+				log.Printf("detect: probe %s: port busy (another program has it open), will retry", p.Name)
+			}
+			changed = true
+			continue
+		}
+		delete(s.busySince, p.Name)
+		if radio.IsPermissionDenied(err) {
+			if !s.denied[p.Name] {
+				log.Printf("detect: probe %s: permission denied", p.Name)
+			}
+			s.denied[p.Name] = true
+			s.probed[p.Name] = time.Now()
+			changed = true
+			continue
+		}
+		delete(s.denied, p.Name)
 		switch {
 		case err != nil:
 			log.Printf("detect: probe %s: %v", p.Name, err)
@@ -140,13 +180,24 @@ func (s *portScanner) logPorts(ports []radio.DetectedPort) {
 // publish pushes a port list to the widgets on the UI thread.
 func (s *portScanner) publish(ports []radio.DetectedPort) {
 	ports = append([]radio.DetectedPort(nil), ports...)
-	failed := map[string]bool{}
+	failed, busyLong, denied := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for name := range s.probed {
-		failed[name] = true
+		if s.denied[name] {
+			denied[name] = true
+		} else {
+			failed[name] = true
+		}
+	}
+	for name, since := range s.busySince {
+		if time.Since(since) >= busyHintAfter {
+			busyLong[name] = true
+		}
 	}
 	fyne.Do(func() {
 		s.ports = ports
 		s.failed = failed
+		s.busyLong = busyLong
+		s.deniedUI = denied
 
 		labels := make([]string, len(ports))
 		for i, p := range ports {
@@ -261,6 +312,11 @@ func (s *portScanner) updateHint() {
 		text = sel.Model + " found. Put it in Reflector TERM mode (Menu 650) with Menu 985 set to " + link + " before connecting."
 	case sel.Role == radio.RoleCIV:
 		text = "This is the radio's CI-V control port. Choose its DV data port instead."
+	case s.deniedUI[sel.Name]:
+		text = "No permission to open " + filepath.Base(sel.Name) +
+			". Run \"sudo usermod -aG dialout $USER\", then log out and back in."
+	case s.busyLong[sel.Name]:
+		text = sel.Model + " found, but another program is using it. Close other radio software, then press refresh."
 	case s.failed[sel.Name]:
 		text = sel.Model + " found but not answering. Put it in DV mode and set its USB data output to DV Data" +
 			modelMenuHint(sel.Model) + "."
@@ -296,10 +352,12 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	hint.Hide()
 
 	s := &portScanner{
-		a:        a,
-		hint:     hint,
-		verified: map[string]bool{},
-		probed:   map[string]time.Time{},
+		a:         a,
+		hint:      hint,
+		verified:  map[string]bool{},
+		probed:    map[string]time.Time{},
+		busySince: map[string]time.Time{},
+		denied:    map[string]bool{},
 	}
 
 	// Start with a placeholder; enumerate ports in the background so

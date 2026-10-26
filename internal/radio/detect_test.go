@@ -1,6 +1,12 @@
 package radio
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+
+	"go.bug.st/serial"
+)
 
 func TestClassify(t *testing.T) {
 	tests := []struct {
@@ -130,5 +136,21 @@ func TestClassifyBluetooth(t *testing.T) {
 	SortPorts(ports)
 	if ports[0].Name != usb.Name {
 		t.Errorf("best port = %s, want USB %s", ports[0].Name, usb.Name)
+	}
+}
+
+func TestPortErrorClassification(t *testing.T) {
+	busy := &serial.PortError{} // zero value is the PortBusy code
+	if busy.Code() != serial.PortBusy {
+		t.Fatalf("zero PortError code = %v, want PortBusy", busy.Code())
+	}
+	if !IsPortBusy(busy) || !IsPortBusy(fmt.Errorf("probe: %w", busy)) {
+		t.Error("busy PortError not recognised")
+	}
+	if IsPermissionDenied(busy) {
+		t.Error("busy PortError classified as permission denied")
+	}
+	if IsPortBusy(errors.New("no such file")) || IsPortBusy(nil) || IsPermissionDenied(nil) {
+		t.Error("non-PortError classified as busy/denied")
 	}
 }

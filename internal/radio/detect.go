@@ -2,6 +2,7 @@ package radio
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -396,6 +397,20 @@ func ProbeDVGateway(name string, timeout time.Duration) (bool, error) {
 		log.Printf("detect: probe %s: no poll ack, got % 02X", name, rx)
 	}
 	return false, nil
+}
+
+// IsPortBusy reports whether err means another program has the port open.
+// On Linux, ModemManager briefly opens every new ttyACM port this way.
+func IsPortBusy(err error) bool {
+	var pe *serial.PortError
+	return errors.As(err, &pe) && pe.Code() == serial.PortBusy
+}
+
+// IsPermissionDenied reports whether err means the user may not open the
+// port (on Linux: not in the dialout group).
+func IsPermissionDenied(err error) bool {
+	var pe *serial.PortError
+	return errors.As(err, &pe) && pe.Code() == serial.PermissionDenied
 }
 
 // containsPollAck reports whether b contains a DV Gateway poll ack frame.
