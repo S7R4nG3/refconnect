@@ -1,6 +1,9 @@
 package dstar
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestDecodeNetworkHeader(t *testing.T) {
 	raw, err := EncodeHeader(DVHeader{
@@ -34,10 +37,21 @@ func TestDecodeNetworkHeader(t *testing.T) {
 		}
 	}
 
-	// Any other wrong CRC is still rejected.
+	// Any other wrong CRC still decodes, reported as a *CRCError.
 	r := raw
-	r[39] ^= 0x01
-	if _, err := DecodeNetworkHeader(r); err == nil {
-		t.Error("corrupt CRC accepted")
+	r[39], r[40] = 0x0B, 0x00
+	h, err := DecodeNetworkHeader(r)
+	var crcErr *CRCError
+	if !errors.As(err, &crcErr) {
+		t.Fatalf("wrong CRC: err = %v, want *CRCError", err)
+	}
+	if crcErr.Got != 0x000B {
+		t.Errorf("CRCError.Got = %04X, want 000B", crcErr.Got)
+	}
+	if h.MyCall != "ZL1ABC  " || h.RPT1 != "XLX299 C" {
+		t.Errorf("header not decoded with wrong CRC: %+v", h)
+	}
+	if _, err := DecodeHeader(r); !errors.As(err, &crcErr) {
+		t.Errorf("DecodeHeader with wrong CRC: err = %v, want *CRCError", err)
 	}
 }

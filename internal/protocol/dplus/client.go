@@ -2,6 +2,7 @@ package dplus
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -286,7 +287,8 @@ func (c *Client) rxLoop() {
 
 		// Parse DSVT data packets (byte[1] = 0x80).
 		hdr, frm, err := parsePacket(buf[:n])
-		if err != nil {
+		var crcErr *dstar.CRCError
+		if err != nil && !errors.As(err, &crcErr) {
 			log.Printf("dplus: parse error: %v", err)
 			continue
 		}
@@ -305,6 +307,11 @@ func (c *Client) rxLoop() {
 				c.rxStreamID = sid
 				c.rxStreamActive = true
 				log.Printf("dplus: new RX stream %02X — forwarding header", sid)
+				if crcErr != nil {
+					// Logged once per stream; the reflector repeats the header.
+					log.Printf("dplus: stream %02X header CRC is wrong (got %04X, want %04X) — accepting it anyway",
+						sid, crcErr.Got, crcErr.Want)
+				}
 			}
 			c.mu.Unlock()
 			if dup {

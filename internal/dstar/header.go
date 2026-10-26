@@ -38,27 +38,44 @@ func padInto(dst []byte, src string) {
 	}
 }
 
+// CRCError reports a header whose stored CRC doesn't match its contents.
+type CRCError struct {
+	Got, Want uint16
+}
+
+func (e *CRCError) Error() string {
+	return fmt.Sprintf("dstar: header CRC mismatch (got %04X, want %04X)", e.Got, e.Want)
+}
+
 // DecodeHeader parses a 41-byte wire header into a DVHeader.
-// Returns an error if the CRC does not match.
+// Returns a *CRCError if the CRC does not match.
 func DecodeHeader(raw [HeaderBytes]byte) (DVHeader, error) {
 	crc := crc16CCITT(raw[:39])
 	stored := binary.LittleEndian.Uint16(raw[39:41])
 	if crc != stored {
-		return DVHeader{}, fmt.Errorf("dstar: header CRC mismatch (got %04X, want %04X)", stored, crc)
+		return DVHeader{}, &CRCError{Got: stored, Want: crc}
 	}
 	return decodeHeaderFields(raw), nil
 }
 
 // DecodeNetworkHeader parses a 41-byte header received from a reflector.
-// Like DecodeHeader it rejects a wrong CRC, but it accepts the placeholder
-// values 0x0000 and 0xFFFF: xlxd and other reflectors forward headers
-// without computing the CRC, leaving the field zeroed.
+// It always returns the decoded header. A wrong CRC is reported as a
+// *CRCError alongside it rather than rejecting the header: reflectors relay
+// headers whose CRC was computed wrongly by the originating radio or hotspot,
+// UDP's own checksum already guards the packet against corruption, and the
+// radio paths re-encode the header with a fresh CRC. The placeholder values
+// 0x0000 and 0xFFFF (xlxd forwards headers without computing the CRC) count
+// as valid.
 func DecodeNetworkHeader(raw [HeaderBytes]byte) (DVHeader, error) {
+	h := decodeHeaderFields(raw)
 	stored := binary.LittleEndian.Uint16(raw[39:41])
 	if stored == 0x0000 || stored == 0xFFFF {
-		return decodeHeaderFields(raw), nil
+		return h, nil
 	}
-	return DecodeHeader(raw)
+	if crc := crc16CCITT(raw[:39]); crc != stored {
+		return h, &CRCError{Got: stored, Want: crc}
+	}
+	return h, nil
 }
 
 // DecodeHeaderNoCRC parses a 41-byte wire header without validating the CRC.

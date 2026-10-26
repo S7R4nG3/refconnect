@@ -3,6 +3,7 @@ package dextra
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -226,7 +227,8 @@ func (c *Client) rxLoop() {
 		}
 
 		hdr, frm, err := parsePacket(buf[:n])
-		if err != nil {
+		var crcErr *dstar.CRCError
+		if err != nil && !errors.As(err, &crcErr) {
 			log.Printf("dextra: parse error: %v", err)
 			continue
 		}
@@ -244,6 +246,11 @@ func (c *Client) rxLoop() {
 				c.rxStreamID = sid
 				c.rxStreamActive = true
 				log.Printf("dextra: new RX stream %04X — forwarding header", sid)
+				if crcErr != nil {
+					// Logged once per stream; the reflector repeats the header.
+					log.Printf("dextra: stream %04X header CRC is wrong (got %04X, want %04X) — accepting it anyway",
+						sid, crcErr.Got, crcErr.Want)
+				}
 			}
 			c.mu.Unlock()
 			if dup {
