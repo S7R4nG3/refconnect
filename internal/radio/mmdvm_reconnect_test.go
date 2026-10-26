@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/S7R4nG3/refconnect/internal/dstar"
+	"go.bug.st/serial"
 )
 
 // fakeModem answers MMDVM commands like a TH-D75 on the master side of a
@@ -165,5 +166,41 @@ func TestMMDVMCloseDuringReconnect(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Close hung while reconnecting")
+	}
+}
+
+// writeCountingPort records writes; other serial.Port methods are unused.
+type writeCountingPort struct {
+	serial.Port
+	writes atomic.Int32
+}
+
+func (p *writeCountingPort) Write(b []byte) (int, error) {
+	p.writes.Add(1)
+	return len(b), nil
+}
+
+func TestMMDVMDropsFramesUntilSessionStarts(t *testing.T) {
+	port := &writeCountingPort{}
+	r := NewMMDVMRadio()
+	r.open = true
+	r.port = port // port open, handshake still running: no session yet
+
+	if err := r.SendHeader(dstar.DVHeader{MyCall: "N0CALL  ", YourCall: "CQCQCQ  "}); err != nil {
+		t.Fatalf("SendHeader: %v", err)
+	}
+	if err := r.SendFrame(dstar.DVFrame{}); err != nil {
+		t.Fatalf("SendFrame: %v", err)
+	}
+	if n := port.writes.Load(); n != 0 {
+		t.Fatalf("%d writes reached the radio before its session started", n)
+	}
+
+	r.sessStop = make(chan struct{}) // session running
+	if err := r.SendFrame(dstar.DVFrame{}); err != nil {
+		t.Fatalf("SendFrame: %v", err)
+	}
+	if port.writes.Load() == 0 {
+		t.Fatal("frame not written once the session was running")
 	}
 }

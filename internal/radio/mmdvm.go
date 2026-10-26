@@ -329,7 +329,10 @@ func (m *MMDVMRadio) drainPort() {
 	m.port.SetReadTimeout(500 * time.Millisecond) //nolint:errcheck
 	buf := make([]byte, 256)
 	total := 0
-	for {
+	// Bound the drain: a radio that keeps talking (e.g. answering "?" to
+	// stray bytes in CAT mode) would otherwise keep it going forever.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
 		n, err := m.port.Read(buf)
 		if n > 0 {
 			log.Printf("mmdvm: drain: read %d bytes: % 02X", n, buf[:n])
@@ -506,9 +509,10 @@ func (m *MMDVMRadio) SendHeader(hdr dstar.DVHeader) error {
 	if !m.open {
 		return fmt.Errorf("mmdvm: port not open")
 	}
-	if m.port == nil {
-		// Link down; the supervisor is reconnecting and the user has been
-		// told. Drop the frame rather than flood the log with errors.
+	if m.port == nil || m.sessStop == nil {
+		// Link down, or a reconnect is still mid-handshake: the radio isn't
+		// in D-STAR mode yet. Drop the frame rather than send it audio it
+		// can't use (or flood the log with errors).
 		return nil
 	}
 	return mmdvmWriteDStarHeader(m.port, hdr)
@@ -520,9 +524,10 @@ func (m *MMDVMRadio) SendFrame(f dstar.DVFrame) error {
 	if !m.open {
 		return fmt.Errorf("mmdvm: port not open")
 	}
-	if m.port == nil {
-		// Link down; the supervisor is reconnecting and the user has been
-		// told. Drop the frame rather than flood the log with errors.
+	if m.port == nil || m.sessStop == nil {
+		// Link down, or a reconnect is still mid-handshake: the radio isn't
+		// in D-STAR mode yet. Drop the frame rather than send it audio it
+		// can't use (or flood the log with errors).
 		return nil
 	}
 	if err := mmdvmWriteDStarData(m.port, f); err != nil {
