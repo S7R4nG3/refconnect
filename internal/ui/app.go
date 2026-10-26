@@ -553,12 +553,11 @@ func (a *App) startRouter() {
 	rt.Start()
 
 	go func() {
-		// The RX indicator means "voice is being delivered to the radio": it
-		// follows frames the router actually wrote to the radio after their
-		// header, not traffic merely arriving from the reflector, so a dark
-		// indicator during reflector activity points at the radio path.
-		// rxTimeout clears it when delivery stops without an end-of-stream
-		// frame.
+		// The RX indicator means "voice is arriving from the reflector",
+		// whether or not it reaches the radio: a lit indicator with a silent
+		// radio points at the radio path (the router also logs a note when
+		// voice arrives without a usable header). rxTimeout clears it when
+		// frames stop without an end-of-stream frame.
 		const rxTimeoutDur = 1500 * time.Millisecond
 		rxTimer := time.NewTimer(rxTimeoutDur)
 		rxTimer.Stop() // not active until RX starts
@@ -600,7 +599,7 @@ func (a *App) startRouter() {
 					}
 				}
 				if evt.Frame != nil {
-					if evt.Direction == router.DirRX && evt.Delivered {
+					if evt.Direction == router.DirRX {
 						setRX(true)
 						rxTimer.Reset(rxTimeoutDur)
 					}
@@ -615,7 +614,7 @@ func (a *App) startRouter() {
 				}
 
 			case <-rxTimer.C:
-				log.Printf("ui: RX delivery stopped — clearing indicator")
+				log.Printf("ui: RX audio stopped — clearing indicator")
 				setRX(false)
 			}
 		}
