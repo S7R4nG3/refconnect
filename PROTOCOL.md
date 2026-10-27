@@ -31,7 +31,8 @@ On macOS, the two ports appear as `/dev/cu.usbmodem*1` and `/dev/cu.usbmodem*3` 
 
 **IC-705 radio settings:**
 - MODE button → select **DV** (not FM/SSB/AM)
-- `MENU > SET > CONNECTORS > ACC/USB OUTPUT SELECT` → **DV Data**
+- `MENU > 2 > DV GW > Gateway Select` → **External Gateway (USB (B))**
+- `MENU > 2 > DV GW > <<Terminal Mode>>`
 
 ---
 

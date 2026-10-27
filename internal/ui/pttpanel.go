@@ -376,8 +376,6 @@ func dvGatewayHint(model string) string {
 	switch model {
 	case "Icom IC-705":
 		return "Set MENU › 2 › DV GW › Gateway Select to External Gateway (USB (B)), then select Terminal Mode."
-	case "Icom IC-9700":
-		return "Put it in DV mode and set its USB data output to DV Data (MENU › SET › Connectors › USB (B) Function)."
 	}
 	return "Put it in DV Gateway Terminal mode on USB."
 }

@@ -112,11 +112,6 @@ var knownVendors = map[string]knownRadio{
 	"2166": {model: "Kenwood radio", protocol: ProtocolMMDVM},
 }
 
-// cp210xDStarModels are Icom radios on a Silicon Labs bridge that support
-// DV Gateway Terminal mode. Other Icom CP210x radios (IC-7300, IC-7100, …)
-// are still labelled so users can tell them apart, but aren't preferred.
-var cp210xDStarModels = map[string]bool{"IC-9700": true}
-
 // classify fills in Model/Protocol/Role/Score from the USB details.
 // ifNum is the USB interface number, or -1 when unknown.
 func classify(p *DetectedPort, ifNum int) {
@@ -142,24 +137,14 @@ func classify(p *DetectedPort, ifNum int) {
 		}
 	}
 	if !matched && vid == "10C4" && pid == "EA60" {
-		// Icom serial strings look like "IC-9700 13001202 A".
+		// Icom radios on a Silicon Labs bridge (IC-9700, IC-7300, IC-7100, …)
+		// set the serial string to e.g. "IC-9700 13001202 A". They're labelled
+		// so users can tell them apart, but none is a DV Gateway candidate:
+		// the IC-9700's External Gateway runs over its DATA jack (OPC-2350LU
+		// cable), not its USB port.
 		fields := strings.Fields(p.SerialNumber)
 		if len(fields) > 0 && (strings.HasPrefix(fields[0], "IC-") || strings.HasPrefix(fields[0], "ID-")) {
 			p.Model = "Icom " + fields[0]
-			if cp210xDStarModels[fields[0]] {
-				p.Protocol = ProtocolDVGateway
-				p.Score = 50
-				if len(fields) >= 3 {
-					// USB (A) carries CI-V; USB (B) carries DV data when
-					// its function is set to "DV Data".
-					switch fields[len(fields)-1] {
-					case "A":
-						p.Role = RoleCIV
-					case "B":
-						p.Role = RoleDVData
-					}
-				}
-			}
 			matched = true
 		}
 	}

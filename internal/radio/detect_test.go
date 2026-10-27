@@ -23,8 +23,9 @@ func TestClassify(t *testing.T) {
 		{"ID-52", DetectedPort{IsUSB: true, VID: "0C26", PID: "003A"}, 0, "Icom ID-52", ProtocolDVGateway, ""},
 		{"TH-D75", DetectedPort{IsUSB: true, VID: "2166", PID: "9023"}, 0, "Kenwood TH-D75", ProtocolMMDVM, ""},
 		{"unknown Icom", DetectedPort{IsUSB: true, VID: "0C26", PID: "0099"}, -1, "Icom radio", ProtocolDVGateway, ""},
-		{"IC-9700 B", DetectedPort{IsUSB: true, VID: "10C4", PID: "EA60", SerialNumber: "IC-9700 13001202 B"}, -1, "Icom IC-9700", ProtocolDVGateway, RoleDVData},
-		{"IC-9700 A", DetectedPort{IsUSB: true, VID: "10C4", PID: "EA60", SerialNumber: "IC-9700 13001202 A"}, -1, "Icom IC-9700", ProtocolDVGateway, RoleCIV},
+		// The IC-9700's gateway runs over its DATA jack, not USB.
+		{"IC-9700 B", DetectedPort{IsUSB: true, VID: "10C4", PID: "EA60", SerialNumber: "IC-9700 13001202 B"}, -1, "Icom IC-9700", "", ""},
+		{"IC-9700 A", DetectedPort{IsUSB: true, VID: "10C4", PID: "EA60", SerialNumber: "IC-9700 13001202 A"}, -1, "Icom IC-9700", "", ""},
 		{"IC-7300", DetectedPort{IsUSB: true, VID: "10C4", PID: "EA60", SerialNumber: "IC-7300 03001507"}, -1, "Icom IC-7300", "", ""},
 		{"generic CP210x", DetectedPort{IsUSB: true, VID: "10C4", PID: "EA60", SerialNumber: "0001"}, -1, "", "", ""},
 		{"non-USB", DetectedPort{}, -1, "", "", ""},
