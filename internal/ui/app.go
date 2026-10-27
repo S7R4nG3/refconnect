@@ -45,7 +45,10 @@ type App struct {
 
 	// radioBusy is set while the radio is opening or open, pausing the
 	// background port scanner so its probes never touch a live port.
-	radioBusy atomic.Bool
+	// radioInUse mirrors it for widgets: the port selector is locked while
+	// set, since swapping radios mid-session would cut off streams.
+	radioBusy  atomic.Bool
+	radioInUse binding.Bool
 
 	// Shared data bindings updated from any goroutine, consumed by widgets.
 	statusText  binding.String
@@ -91,6 +94,7 @@ func Run(cfg *config.Config, version string) {
 		linkState:   binding.NewString(),
 		lastHeard:   binding.NewString(),
 		aprsEnabled: binding.NewBool(),
+		radioInUse:  binding.NewBool(),
 	}
 	a.fyneApp = app.NewWithID("org.refconnect.refconnect")
 
@@ -486,7 +490,7 @@ func (a *App) sendBeacon() {
 
 // openRadio opens the serial port for the radio.
 func (a *App) openRadio(portName string) {
-	a.radioBusy.Store(true)
+	a.setRadioBusy(true)
 	var r radio.RadioInterface
 	if a.cfg.Radio.Protocol == "MMDVM" {
 		m := radio.NewMMDVMRadio()
@@ -499,7 +503,7 @@ func (a *App) openRadio(portName string) {
 		Port: portName,
 	}
 	if err := r.Open(cfg); err != nil {
-		a.radioBusy.Store(false)
+		a.setRadioBusy(false)
 		a.appendLog("Radio open error: " + err.Error())
 		return
 	}
@@ -522,7 +526,14 @@ func (a *App) closeRadio() {
 		a.radio = nil
 		a.appendLog("Radio closed.")
 	}
-	a.radioBusy.Store(false)
+	a.setRadioBusy(false)
+}
+
+// setRadioBusy records whether the radio is opening or open, for the port
+// scanner and the port selector.
+func (a *App) setRadioBusy(busy bool) {
+	a.radioBusy.Store(busy)
+	fyne.Do(func() { a.radioInUse.Set(busy) }) //nolint:errcheck
 }
 
 // ptt asserts or releases PTT.

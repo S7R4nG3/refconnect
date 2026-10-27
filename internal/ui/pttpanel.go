@@ -10,6 +10,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -50,6 +51,7 @@ type portScanner struct {
 	busyLong   map[string]bool // ports busy for longer than busyHintAfter
 	deniedUI   map[string]bool // ports we lack permission to open
 	userPicked string          // port the user chose by hand this session
+	locked     bool            // radio in use; selection disabled until disconnect
 	updating   bool            // suppresses OnChanged during programmatic updates
 }
 
@@ -288,6 +290,11 @@ func (s *portScanner) selectPort(p radio.DetectedPort) {
 
 // updateHint explains the selected port's state in plain language.
 func (s *portScanner) updateHint() {
+	if s.locked {
+		s.hint.SetText("Disconnect from the reflector to change radios.")
+		s.hint.Show()
+		return
+	}
 	var sel *radio.DetectedPort
 	for i := range s.ports {
 		if s.ports[i].Name == s.a.cfg.Radio.Port {
@@ -376,6 +383,22 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 			s.scan(false)
 		}
 	}()
+
+	// Lock the selection while the radio is in use: swapping radios mid-session
+	// would cut off a transmission, leave the new radio without the current
+	// stream's header, and stall audio during its handshake.
+	a.radioInUse.AddListener(binding.NewDataListener(func() {
+		locked, _ := a.radioInUse.Get()
+		s.locked = locked
+		if locked {
+			s.portSelect.Disable()
+			refreshBtn.Disable()
+		} else {
+			s.portSelect.Enable()
+			refreshBtn.Enable()
+		}
+		s.updateHint()
+	}))
 
 	portRow := container.NewBorder(nil, nil, nil, refreshBtn, s.portSelect)
 
