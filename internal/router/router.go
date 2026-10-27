@@ -63,10 +63,17 @@ type Config struct {
 	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
 	ReflectorCall string
 
-	// TXText is a D-STAR slow data text message (up to 20 chars) injected
-	// into every outgoing superframe. It appears as the "User Message" on
-	// reflector status pages and ircDDB Last Heard listings.
+	// TXText is a D-STAR slow data text message (up to 20 chars) sent in
+	// the first superframe of each outgoing transmission. It appears as the
+	// "User Message" on reflector status pages and ircDDB Last Heard listings.
 	TXText string
+
+	// DPRS, if set, returns the TNC2 APRS position packet to embed as DPRS in
+	// the rest of each outgoing transmission, so reflector dashboards can show
+	// the station on a map. ok=false passes the radio's own slow data through
+	// instead (which carries its GPS, if enabled). It is called from the TX
+	// goroutine about once per second while transmitting.
+	DPRS func() (tnc2 string, ok bool)
 }
 
 // Router routes DV frames between a radio and a reflector.
@@ -110,6 +117,13 @@ type Router struct {
 	rxFrames        int // voice frames received from the reflector
 	rxSent          int // ...of which written to the radio
 	rxEventsDropped int // ...of which the UI never saw (event queue full)
+
+	// txDPRS holds the scrambled slow data of the DPRS sentence being sent in
+	// the current transmission; txDPRSIdx is the next triplet to send. Owned
+	// by txLoop.
+	txDPRS    [][3]byte
+	txDPRSIdx int
+	txDPRSLogged bool
 
 	// txText holds pre-scrambled slow data for a 20-char D-STAR text
 	// message injected into every outgoing superframe. This appears as
@@ -237,6 +251,8 @@ func (rt *Router) txLoop() {
 			rt.dprsDec.Reset()
 			rt.slowDump = rt.slowDump[:0]
 			rt.gotFixThisTX = false
+			rt.txDPRS, rt.txDPRSIdx, rt.txDPRSLogged = nil, 0, false
+			rt.txFrameCount = 0
 			rt.rewriteHeaderForReflector(&hdr)
 			if err := rt.reflector.SendHeader(hdr); err != nil {
 				rt.emit(Event{Direction: DirTX, Err: err})
@@ -283,11 +299,7 @@ func (rt *Router) txLoop() {
 			for _, sentence := range rt.dprsDec.Feed(frm.SlowData, frm.Seq) {
 				rt.handleDPRSSentence(sentence)
 			}
-			// Replace slow data with our text message so reflector
-			// dashboards and ircDDB show it as the "User Message".
-			if rt.cfg.TXText != "" {
-				frm.SlowData = rt.txText[frm.Seq%(dstar.MaxSeq+1)]
-			}
+			frm.SlowData = rt.txSlowData(frm)
 			if frm.End {
 				log.Printf("router: TX end-of-stream (seq=%d, total frames=%d)", frm.Seq, rt.txFrameCount)
 				// If nothing decoded, dump the whole descrambled slow-data
@@ -330,6 +342,43 @@ func printableASCII(b []byte) string {
 		}
 	}
 	return string(out)
+}
+
+// txSlowData picks the slow data forwarded to the reflector for one TX frame.
+// The first superframe carries the text message (the dashboard "User
+// Message"). Later superframes carry the APRS position as DPRS, so dashboards
+// can map the station, or the radio's own slow data (e.g. its GPS) when there
+// is no position to send. A DPRS sentence spans more than one superframe; it
+// restarts at the first sync frame after it finishes.
+func (rt *Router) txSlowData(frm dstar.DVFrame) [3]byte {
+	seq := frm.Seq % (dstar.MaxSeq + 1)
+	if rt.txFrameCount <= dstar.MaxSeq+1 {
+		if rt.cfg.TXText != "" {
+			return rt.txText[seq]
+		}
+		return frm.SlowData
+	}
+	if seq == 0 && rt.txDPRSIdx >= len(rt.txDPRS) {
+		rt.txDPRS, rt.txDPRSIdx = nil, 0
+		if rt.cfg.DPRS != nil {
+			if tnc2, ok := rt.cfg.DPRS(); ok {
+				rt.txDPRS = dstar.EncodeDPRSFrames(aprs.WrapDPRS(tnc2), 0)
+				if !rt.txDPRSLogged {
+					rt.txDPRSLogged = true
+					log.Printf("router: embedding DPRS position in TX: %s", tnc2)
+				}
+			}
+		}
+	}
+	if rt.txDPRS == nil {
+		return frm.SlowData
+	}
+	if rt.txDPRSIdx < len(rt.txDPRS) {
+		sd := rt.txDPRS[rt.txDPRSIdx]
+		rt.txDPRSIdx++
+		return sd
+	}
+	return dstar.NullSlowData(seq) // sentence sent; idle until the next superframe
 }
 
 // handleDPRSSentence validates a slow-data DPRS sentence, parses the

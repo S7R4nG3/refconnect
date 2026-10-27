@@ -435,27 +435,16 @@ func (a *App) stopAPRS() {
 // router (to the reflector) and via APRS-IS (to aprs.fi). Position comes
 // from the radio's GPS cache when available, falling back to the static
 // latitude/longitude in the config.
-func (a *App) sendBeacon() {
-	log.Printf("aprs: sendBeacon called")
-	if a.rt == nil {
-		log.Printf("aprs: sendBeacon aborted — no router")
-		return
-	}
-
-	// Resolve position: prefer live GPS from radio, fall back to config.
-	var pos aprs.Position
-	if p, _, ok := a.rt.GPS().Get(); ok {
-		pos = p
-		log.Printf("aprs: using GPS fix from radio: %.5f, %.5f", pos.Lat, pos.Lon)
-		a.appendLog("APRS: using GPS fix from radio.")
+// aprsPacket builds the TNC2 APRS position report for this station. The
+// position is the radio's cached GPS fix if there is one (fromRadio), else
+// the static position from config; ok is false if neither is available.
+func (a *App) aprsPacket(gps *aprs.Cache) (tnc2 string, pos aprs.Position, fromRadio, ok bool) {
+	if p, _, has := gps.Get(); has {
+		pos, fromRadio = p, true
 	} else if a.cfg.APRS.HasStaticPosition() {
 		pos = aprs.Position{Lat: a.cfg.APRS.Latitude, Lon: a.cfg.APRS.Longitude}
-		log.Printf("aprs: using static position from config: %.5f, %.5f", pos.Lat, pos.Lon)
-		a.appendLog("APRS: using static position from config.")
 	} else {
-		log.Printf("aprs: no position available (no radio GPS fix, no static lat/lon in config)")
-		a.appendLog("APRS: no position available — set latitude/longitude in config or transmit to cache a GPS fix.")
-		return
+		return "", aprs.Position{}, false, false
 	}
 
 	call := strings.ToUpper(strings.TrimSpace(a.cfg.Callsign))
@@ -469,13 +458,38 @@ func (a *App) sendBeacon() {
 	if len(a.cfg.APRS.Symbol) > 0 {
 		symChar = a.cfg.APRS.Symbol[0]
 	}
-	tnc2 := aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment)
-	log.Printf("aprs: TNC2 packet: %s", tnc2)
+	return aprs.BuildPositionPacket(call, pos, symTable, symChar, a.cfg.APRS.Comment), pos, fromRadio, true
+}
 
-	// Position beacons are forwarded to APRS-IS (aprs.fi) only. They are
-	// intentionally NOT transmitted over the reflector: a reflector beacon is a
-	// separate D-STAR transmission that would show the operator a second time in
-	// the reflector's "Last Heard" (and ircDDB) right after each voice key-up.
+func (a *App) sendBeacon() {
+	log.Printf("aprs: sendBeacon called")
+	if a.rt == nil {
+		log.Printf("aprs: sendBeacon aborted — no router")
+		return
+	}
+
+	tnc2, pos, fromRadio, ok := a.aprsPacket(a.rt.GPS())
+	switch {
+	case !ok:
+		log.Printf("aprs: no position available (no radio GPS fix, no static lat/lon in config)")
+		a.appendLog("APRS: no position available — set latitude/longitude in config or transmit to cache a GPS fix.")
+		return
+	case fromRadio:
+		log.Printf("aprs: using GPS fix from radio: %.5f, %.5f", pos.Lat, pos.Lon)
+		a.appendLog("APRS: using GPS fix from radio.")
+	default:
+		log.Printf("aprs: using static position from config: %.5f, %.5f", pos.Lat, pos.Lon)
+		a.appendLog("APRS: using static position from config.")
+	}
+	log.Printf("aprs: TNC2 packet: %s", tnc2)
+	call := strings.ToUpper(strings.TrimSpace(a.cfg.Callsign))
+
+	// Periodic beacons go to APRS-IS (aprs.fi) only. They are intentionally
+	// NOT transmitted over the reflector: a reflector beacon is a separate
+	// D-STAR transmission that would show the operator a second time in the
+	// reflector's "Last Heard" (and ircDDB) right after each voice key-up.
+	// The reflector gets the position inside voice transmissions instead
+	// (router.Config.DPRS).
 	if a.aprsIS == nil {
 		a.aprsIS = aprs.NewAPRSISClient(call, "RefConnect", "0.7.0")
 	}
@@ -553,12 +567,23 @@ func (a *App) startRouter() {
 		a.rt.Stop()
 	}
 	myCall := buildMyCall(a.cfg.Callsign, a.cfg.CallsignSuffix)
-	rt := router.New(a.radio, a.reflector, router.Config{
+	var rt *router.Router
+	rt = router.New(a.radio, a.reflector, router.Config{
 		DropTXWhenDisconnected: true,
 		MyCall:                 myCall,
 		ReflectorModule:        a.reflectorModule,
 		ReflectorCall:          a.reflectorCall,
 		TXText:                 "RefConnect by KR4GCQ",
+		// With APRS enabled, transmissions carry the position as DPRS so the
+		// reflector dashboard shows a map pin, without a separate beacon
+		// transmission (which would appear twice in Last Heard).
+		DPRS: func() (string, bool) {
+			if on, _ := a.aprsEnabled.Get(); !on {
+				return "", false
+			}
+			tnc2, _, _, ok := a.aprsPacket(rt.GPS())
+			return tnc2, ok
+		},
 	})
 	a.rt = rt
 	rt.Start()
