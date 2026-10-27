@@ -371,11 +371,14 @@ func (s *portScanner) updateProtocol(sel *radio.DetectedPort) {
 }
 
 // dvGatewayHint tells the user how to put an Icom radio into DV Gateway
-// Terminal mode on USB, with menu paths where known.
+// Terminal mode on USB, with menu paths where known. Menu paths come from
+// Icom's documentation (ID-52: "About the DV Gateway function", July 2024).
 func dvGatewayHint(model string) string {
 	switch model {
 	case "Icom IC-705":
 		return "Set MENU › 2 › DV GW › Gateway Select to External Gateway (USB (B)), then select Terminal Mode."
+	case "Icom ID-52":
+		return "Set MENU › SET › Function › USB Connect to Serialport, then select MENU › DV Gateway › <<Terminal Mode>>."
 	}
 	return "Put it in DV Gateway Terminal mode on USB."
 }
