@@ -36,6 +36,10 @@ type portScanner struct {
 	a          *App
 	portSelect *widget.Select
 	hint       *widget.Label
+	// protoRow lets the user choose the protocol for a port that isn't a
+	// recognised radio (e.g. Windows Bluetooth COM ports); hidden otherwise.
+	protoRow    *fyne.Container
+	protoSelect *widget.Select
 
 	// Scan goroutine state, guarded by scanMu.
 	scanMu    sync.Mutex
@@ -288,23 +292,28 @@ func (s *portScanner) selectPort(p radio.DetectedPort) {
 	}
 }
 
-// updateHint explains the selected port's state in plain language.
+// updateHint explains the selected port's state in plain language, and shows
+// the protocol selector when the selected port isn't a recognised radio.
 func (s *portScanner) updateHint() {
-	if s.locked {
-		s.hint.SetText("Disconnect from the reflector to change radios.")
-		s.hint.Show()
-		return
-	}
 	var sel *radio.DetectedPort
 	for i := range s.ports {
 		if s.ports[i].Name == s.a.cfg.Radio.Port {
 			sel = &s.ports[i]
 		}
 	}
+	s.updateProtocol(sel)
+
+	if s.locked {
+		s.hint.SetText("Disconnect from the reflector to change radios.")
+		s.hint.Show()
+		return
+	}
 	anyRadio := len(s.ports) > 0 && s.ports[0].IsRadio()
 
 	var text string
 	switch {
+	case !anyRadio && sel != nil:
+		text = "No radio detected. If this port is your radio, choose its protocol below; otherwise connect your radio with a USB cable and turn it on."
 	case !anyRadio:
 		text = "No radio detected. Connect your radio with a USB cable and turn it on."
 	case sel == nil || !sel.IsRadio():
@@ -331,6 +340,34 @@ func (s *portScanner) updateHint() {
 	}
 	s.hint.SetText(text)
 	s.hint.Show()
+}
+
+// radioProtocols maps protocol selector labels to config values.
+var radioProtocols = map[string]string{
+	"ICOM (DV Gateway)": radio.ProtocolDVGateway,
+	"Kenwood (MMDVM)":   radio.ProtocolMMDVM,
+}
+var radioProtocolLabels = []string{"ICOM (DV Gateway)", "Kenwood (MMDVM)"}
+
+// updateProtocol shows the protocol selector, set to the saved protocol, for
+// a selected port that isn't a recognised radio. A recognised radio sets its
+// own protocol, so the selector is hidden for those.
+func (s *portScanner) updateProtocol(sel *radio.DetectedPort) {
+	if sel == nil || sel.IsRadio() {
+		s.protoRow.Hide()
+		return
+	}
+	for label, val := range radioProtocols {
+		if val == s.a.cfg.Radio.Protocol && s.protoSelect.Selected != label {
+			s.protoSelect.SetSelected(label)
+		}
+	}
+	if s.locked {
+		s.protoSelect.Disable()
+	} else {
+		s.protoSelect.Enable()
+	}
+	s.protoRow.Show()
 }
 
 // dvGatewayHint tells the user how to put an Icom radio into DV Gateway
@@ -366,6 +403,14 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		busySince: map[string]time.Time{},
 		denied:    map[string]bool{},
 	}
+
+	s.protoSelect = widget.NewSelect(radioProtocolLabels, func(label string) {
+		if val, ok := radioProtocols[label]; ok {
+			a.cfg.Radio.Protocol = val
+		}
+	})
+	s.protoRow = container.NewGridWithColumns(2, widget.NewLabel("Protocol"), s.protoSelect)
+	s.protoRow.Hide()
 
 	// Start with a placeholder; enumerate ports in the background so
 	// the window appears immediately (serial enumeration is slow on Windows).
@@ -410,6 +455,7 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 	return container.NewVBox(
 		widget.NewLabel("Radio"),
 		portRow,
+		s.protoRow,
 		hint,
 		container.NewBorder(nil, nil, aprsCheck, helpLink),
 	)
