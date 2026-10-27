@@ -325,8 +325,7 @@ func (s *portScanner) updateHint() {
 	case s.busyLong[sel.Name]:
 		text = sel.Model + " found, but another program is using it. Close other radio software, then press refresh."
 	case s.failed[sel.Name]:
-		text = sel.Model + " found but not answering. Put it in DV mode and set its USB data output to DV Data" +
-			modelMenuHint(sel.Model) + "."
+		text = sel.Model + " found but not answering. " + dvGatewayHint(sel.Model)
 	default:
 		text = "Checking " + sel.Model + "…"
 	}
@@ -334,15 +333,16 @@ func (s *portScanner) updateHint() {
 	s.hint.Show()
 }
 
-// modelMenuHint returns the menu path for the DV data setting, if known.
-func modelMenuHint(model string) string {
+// dvGatewayHint tells the user how to put an Icom radio into DV Gateway
+// Terminal mode on USB, with menu paths where known.
+func dvGatewayHint(model string) string {
 	switch model {
 	case "Icom IC-705":
-		return " (MENU › SET › Connectors › ACC/USB Output Select)"
+		return "Set MENU › 2 › DV GW › Gateway Select to External Gateway (USB (B)), then select Terminal Mode."
 	case "Icom IC-9700":
-		return " (MENU › SET › Connectors › USB (B) Function)"
+		return "Put it in DV mode and set its USB data output to DV Data (MENU › SET › Connectors › USB (B) Function)."
 	}
-	return ""
+	return "Put it in DV Gateway Terminal mode on USB."
 }
 
 // buildPTTPanel returns the serial port selector. The selection (and the
