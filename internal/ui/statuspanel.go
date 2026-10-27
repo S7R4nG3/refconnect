@@ -35,43 +35,31 @@ func buildStatusPanel(a *App) fyne.CanvasObject {
 
 	heardLabel := widget.NewLabelWithData(binding.NewSprintf("Last heard: %s", a.lastHeard))
 
-	rxIndicator := widget.NewProgressBarInfinite()
-	rxIndicator.Hide()
-
-	txIndicator := widget.NewProgressBarInfinite()
-	txIndicator.Hide()
-
-	// Show/hide activity indicators based on rx/tx bindings.
-	a.rxActive.AddListener(binding.NewDataListener(func() {
-		v, _ := a.rxActive.Get()
-		if v {
-			rxIndicator.Show()
-			rxIndicator.Start()
-		} else {
-			rxIndicator.Stop()
-			rxIndicator.Hide()
-		}
-	}))
-	a.txActive.AddListener(binding.NewDataListener(func() {
-		v, _ := a.txActive.Get()
-		if v {
-			txIndicator.Show()
-			txIndicator.Start()
-		} else {
-			txIndicator.Stop()
-			txIndicator.Hide()
-		}
-	}))
-
 	return container.NewVBox(
 		widget.NewLabel("Status"),
 		linkRich,
 		heardLabel,
-		container.NewGridWithColumns(2,
-			widget.NewLabel("RX:"), rxIndicator,
-		),
-		container.NewGridWithColumns(2,
-			widget.NewLabel("TX:"), txIndicator,
-		),
+		activityRow("RX:", a.rxActive),
+		activityRow("TX:", a.txActive),
 	)
+}
+
+// activityRow returns a labelled indicator that animates while active is true.
+func activityRow(label string, active binding.Bool) *fyne.Container {
+	indicator := widget.NewProgressBarInfinite()
+	indicator.Hide()
+	row := container.NewGridWithColumns(2, widget.NewLabel(label), indicator)
+	active.AddListener(binding.NewDataListener(func() {
+		if v, _ := active.Get(); v {
+			indicator.Show()
+			indicator.Start()
+		} else {
+			indicator.Stop()
+			indicator.Hide()
+		}
+		// The grid skips hidden children when laying out, so an indicator
+		// hidden at layout time stays 0x0 when shown until the row re-lays out.
+		row.Refresh()
+	}))
+	return row
 }
