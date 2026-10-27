@@ -37,11 +37,12 @@ type Client struct {
 	frmCh   chan dstar.DVFrame
 	eventCh chan protocol.Event
 
-	stopCh         chan struct{}
-	wg             sync.WaitGroup // tracks rxLoop + keepaliveLoop
-	streamID       uint16
-	rxStreamID     uint16 // current inbound stream ID for dedup
-	rxStreamActive bool
+	stopCh          chan struct{}
+	wg              sync.WaitGroup // tracks rxLoop + keepaliveLoop
+	streamID        uint16
+	rxStreamID      uint16 // current inbound stream ID for dedup
+	rxStreamActive  bool
+	rxFramesDropped int // inbound voice frames dropped because frmCh was full (rxLoop only)
 }
 
 // New returns a new DExtra client.  Call Connect to establish a link.
@@ -273,6 +274,10 @@ func (c *Client) rxLoop() {
 			select {
 			case c.frmCh <- *frm:
 			default:
+				c.rxFramesDropped++
+				if c.rxFramesDropped == 1 || c.rxFramesDropped%100 == 0 {
+					log.Printf("dextra: dropped inbound voice frame: channel full (%d so far)", c.rxFramesDropped)
+				}
 			}
 		}
 	}

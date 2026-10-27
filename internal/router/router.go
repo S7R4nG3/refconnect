@@ -105,6 +105,11 @@ type Router struct {
 	rxHeaderDelivered bool      // this transmission's header reached the radio
 	rxNoHeaderNoted   bool      // noteNoHeader already sent for this transmission
 	rxLastFrame       time.Time // when the last RX header or frame arrived
+	// Per-transmission counters for the end-of-stream diagnostic log line.
+	rxHeaderSeen    bool
+	rxFrames        int // voice frames received from the reflector
+	rxSent          int // ...of which written to the radio
+	rxEventsDropped int // ...of which the UI never saw (event queue full)
 
 	// txText holds pre-scrambled slow data for a 20-char D-STAR text
 	// message injected into every outgoing superframe. This appears as
@@ -359,8 +364,10 @@ func (rt *Router) rxLoop() {
 			if !ok {
 				return
 			}
+			rt.endRXTransmission("no end frame")
 			log.Printf("router: RX header from reflector: MYCALL=%q URCALL=%q RPT1=%q RPT2=%q",
 				hdr.MyCall, hdr.YourCall, hdr.RPT1, hdr.RPT2)
+			rt.rxHeaderSeen = true
 			delivered := rt.deliverRX(func() error { return rt.radio.SendHeader(hdr) })
 			rt.rxHeaderDelivered = delivered
 			rt.rxNoHeaderNoted = false
@@ -374,12 +381,17 @@ func (rt *Router) rxLoop() {
 			}
 			if time.Since(rt.rxLastFrame) > rxStreamGap {
 				// A new transmission whose header never arrived.
+				rt.endRXTransmission("no end frame")
 				rt.rxHeaderDelivered = false
 				rt.rxNoHeaderNoted = false
 			}
 			rt.rxLastFrame = time.Now()
 
 			sent := rt.deliverRX(func() error { return rt.radio.SendFrame(frm) })
+			rt.rxFrames++
+			if sent {
+				rt.rxSent++
+			}
 			f := frm
 			evt := Event{Direction: DirRX, Frame: &f, Delivered: sent && rt.rxHeaderDelivered}
 			if sent && !rt.rxHeaderDelivered && !rt.rxNoHeaderNoted {
@@ -387,17 +399,32 @@ func (rt *Router) rxLoop() {
 				log.Printf("router: RX voice reaching radio without a delivered header")
 				evt.Note = noteNoHeader
 			}
+			if evt.Note != "" {
+				rt.emitWait(evt) // don't let a full queue drop the note
+			} else if !rt.emit(evt) {
+				rt.rxEventsDropped++
+			}
 			if frm.End {
 				rt.rxHeaderDelivered = false
 				rt.rxNoHeaderNoted = false
-			}
-			if evt.Note != "" {
-				rt.emitWait(evt) // don't let a full queue drop the note
-			} else {
-				rt.emit(evt)
+				rt.endRXTransmission("end frame")
 			}
 		}
 	}
+}
+
+// endRXTransmission logs a summary of the RX transmission that just ended,
+// if there was one, and resets its counters. It shows where audio stopped:
+// at the reflector (no frames), the radio (frames not sent), or the UI
+// (events dropped).
+func (rt *Router) endRXTransmission(how string) {
+	if !rt.rxHeaderSeen && rt.rxFrames == 0 {
+		return
+	}
+	log.Printf("router: RX transmission ended (%s): header=%v, %d voice frames, %d sent to radio, %d UI events dropped",
+		how, rt.rxHeaderSeen, rt.rxFrames, rt.rxSent, rt.rxEventsDropped)
+	rt.rxHeaderSeen = false
+	rt.rxFrames, rt.rxSent, rt.rxEventsDropped = 0, 0, 0
 }
 
 // deliverRX sends to the radio if it is open, reporting whether the write
@@ -423,11 +450,15 @@ func (rt *Router) emitWait(e Event) {
 	}
 }
 
-func (rt *Router) emit(e Event) {
+// emit sends an event to the UI without blocking, reporting whether it was
+// queued.
+func (rt *Router) emit(e Event) bool {
 	select {
 	case <-rt.stopCh:
-		return // stopped; eventCh is closed
+		return false // stopped; eventCh is closed
 	case rt.eventCh <- e:
+		return true
 	default: // drop if UI is not consuming fast enough
+		return false
 	}
 }

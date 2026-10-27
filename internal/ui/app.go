@@ -577,6 +577,7 @@ func (a *App) startRouter() {
 		setRX := func(on bool) {
 			if on != rxOn {
 				rxOn = on
+				log.Printf("ui: RX indicator on=%v", on)
 				fyne.Do(func() { a.rxActive.Set(on) }) //nolint:errcheck
 			}
 		}
@@ -625,7 +626,7 @@ func (a *App) startRouter() {
 				}
 
 			case <-rxTimer.C:
-				log.Printf("ui: RX audio stopped — clearing indicator")
+				log.Printf("ui: RX audio stopped without an end frame")
 				setRX(false)
 			}
 		}

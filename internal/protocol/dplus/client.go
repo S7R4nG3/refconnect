@@ -42,6 +42,7 @@ type Client struct {
 	rxKeepaliveCount int
 	rxStreamID       [2]byte // current inbound stream ID for dedup
 	rxStreamActive   bool
+	rxFramesDropped  int // inbound voice frames dropped because frmCh was full (rxLoop only)
 }
 
 // New returns a new DPlus client.
@@ -332,6 +333,10 @@ func (c *Client) rxLoop() {
 			select {
 			case c.frmCh <- *frm:
 			default:
+				c.rxFramesDropped++
+				if c.rxFramesDropped == 1 || c.rxFramesDropped%100 == 0 {
+					log.Printf("dplus: dropped inbound voice frame: channel full (%d so far)", c.rxFramesDropped)
+				}
 			}
 		}
 	}
