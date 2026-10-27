@@ -256,3 +256,59 @@ func TestTXPassesRadioSlowDataWithoutPosition(t *testing.T) {
 		}
 	}
 }
+
+// scrambledBlock returns the two scrambled frames carrying one 6-byte block.
+func scrambledBlock(seg [6]byte, seq uint8) (a, b [3]byte) {
+	return dstar.ScrambleSlowData([3]byte{seg[0], seg[1], seg[2]}, seq),
+		dstar.ScrambleSlowData([3]byte{seg[3], seg[4], seg[5]}, seq+1)
+}
+
+// A radio's own TX message (interleaved with its GPS, as the IC-705 does)
+// must not leak through after the first superframe; its GPS must.
+func TestTXPassThroughBlanksRadioTextKeepsGPS(t *testing.T) {
+	_, rad, ref := startRouterWith(t, Config{
+		TXText: "RefConnect by KR4GCQ",
+		DPRS:   func() (string, bool) { return "", false },
+	})
+	gps := [6]byte{0x35, '$', '$', 'C', 'R', 'C'}
+	msg := [6]byte{0x40, 'D', 'a', 'v', 'e', ' '}
+
+	rad.hdrCh <- dstar.DVHeader{MyCall: "KR4GCQ  ", YourCall: "CQCQCQ  ", RPT1: "KR4GCQ D", RPT2: "REF001 C"}
+	var out []dstar.DVFrame
+	for i := 0; i < 2*(dstar.MaxSeq+1); i++ {
+		seq := uint8(i % (dstar.MaxSeq + 1))
+		f := dstar.DVFrame{Seq: seq, SlowData: dstar.SyncSlowData}
+		if seq != 0 {
+			// Alternate GPS and message blocks: 1-2 GPS, 3-4 message, ...
+			first := seq
+			if seq%2 == 0 {
+				first = seq - 1
+			}
+			seg := gps
+			if (first/2)%2 == 1 {
+				seg = msg
+			}
+			a, b := scrambledBlock(seg, first)
+			f.SlowData = a
+			if seq%2 == 0 {
+				f.SlowData = b
+			}
+		}
+		rad.frmCh <- f
+		out = append(out, <-ref.txCh)
+	}
+
+	for i, f := range out[dstar.MaxSeq+1:] {
+		seq := f.Seq
+		if seq == 0 || seq%2 == 0 {
+			continue
+		}
+		typ := dstar.ScrambleSlowData(f.SlowData, seq)[0] & 0xF0
+		if typ == 0x40 {
+			t.Fatalf("frame %d: radio text block passed through", dstar.MaxSeq+1+i)
+		}
+		if (seq/2)%2 == 0 && typ != 0x30 {
+			t.Fatalf("frame %d: radio GPS block type %02X, want 0x3x", dstar.MaxSeq+1+i, typ)
+		}
+	}
+}

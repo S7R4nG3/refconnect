@@ -124,6 +124,9 @@ type Router struct {
 	txDPRS    [][3]byte
 	txDPRSIdx int
 	txDPRSLogged bool
+	// txBlankBlock is set while passing through a radio slow-data block that
+	// is being blanked (see passRadioSlowData). Owned by txLoop.
+	txBlankBlock bool
 
 	// txText holds pre-scrambled slow data for a 20-char D-STAR text
 	// message injected into every outgoing superframe. This appears as
@@ -371,7 +374,7 @@ func (rt *Router) txSlowData(frm dstar.DVFrame) [3]byte {
 		}
 	}
 	if rt.txDPRS == nil {
-		return frm.SlowData
+		return rt.passRadioSlowData(frm.SlowData, seq)
 	}
 	if rt.txDPRSIdx < len(rt.txDPRS) {
 		sd := rt.txDPRS[rt.txDPRSIdx]
@@ -379,6 +382,26 @@ func (rt *Router) txSlowData(frm dstar.DVFrame) [3]byte {
 		return sd
 	}
 	return dstar.NullSlowData(seq) // sentence sent; idle until the next superframe
+}
+
+// passRadioSlowData forwards the radio's own slow data (e.g. its GPS), but
+// blanks its text-message blocks (type 0x4x). Radios interleave their TX
+// message with GPS data; passed through, those blocks would overwrite the
+// text message sent in the first superframe and leave the reflector with a
+// fragment of each. A 6-byte block spans an odd/even frame pair after the
+// sync frame, and its first byte gives its type.
+func (rt *Router) passRadioSlowData(sd [3]byte, seq uint8) [3]byte {
+	if seq == 0 {
+		return sd
+	}
+	if seq%2 == 1 {
+		d := dstar.ScrambleSlowData(sd, seq)
+		rt.txBlankBlock = d[0]&0xF0 == 0x40
+	}
+	if rt.txBlankBlock {
+		return dstar.NullSlowData(seq)
+	}
+	return sd
 }
 
 // handleDPRSSentence validates a slow-data DPRS sentence, parses the
