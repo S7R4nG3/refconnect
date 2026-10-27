@@ -62,6 +62,37 @@ func NullSlowData(seq uint8) [3]byte {
 	return ScrambleSlowData([3]byte{0x00, 0x00, 0x00}, s)
 }
 
+// Slow data is carried in 6-byte blocks, each spanning an odd/even pair of
+// voice frames after the sync frame (frames 1-2, 3-4, ... 19-20). The high
+// nibble of a block's first byte gives its type.
+const (
+	BlockTypeGPS     = 0x30 // GPS data (DPRS); low nibble = payload length
+	BlockTypeMessage = 0x40 // text message; low nibble = block number 0-3
+	BlockTypeFiller  = 0x60 // idle filler
+)
+
+// FillerBlock is the idle slow-data block radios send when they have nothing
+// else to carry.
+var FillerBlock = [6]byte{0x66, 0x66, 0x66, 0x66, 0x66, 0x66}
+
+// TextMessageBlocks returns the four unscrambled slow-data blocks (types
+// 0x40-0x43) carrying a text message, right-padded with spaces to 20
+// characters.
+func TextMessageBlocks(msg string) [4][6]byte {
+	var padded [20]byte
+	for i := range padded {
+		padded[i] = ' '
+	}
+	copy(padded[:], msg)
+
+	var blocks [4][6]byte
+	for n := range blocks {
+		blocks[n][0] = BlockTypeMessage | byte(n)
+		copy(blocks[n][1:], padded[n*5:n*5+5])
+	}
+	return blocks
+}
+
 // EncodeTextMessage encodes a D-STAR slow data text message (up to 20
 // characters) into a full superframe of pre-scrambled slow data triplets.
 // The returned array is indexed by frame sequence number (0–20):
@@ -75,22 +106,14 @@ func NullSlowData(seq uint8) [3]byte {
 // dongle clients. Messages shorter than 20 characters are right-padded
 // with spaces.
 func EncodeTextMessage(msg string) [MaxSeq + 1][3]byte {
-	var padded [20]byte
-	for i := range padded {
-		padded[i] = ' '
-	}
-	copy(padded[:], msg)
-
 	var frames [MaxSeq + 1][3]byte
 	frames[0] = SyncSlowData
 
-	for block := 0; block < 4; block++ {
-		off := block * 5
-		tag := byte(0x40) | byte(block)
+	for block, seg := range TextMessageBlocks(msg) {
 		f1 := uint8(1 + block*2)
 		f2 := f1 + 1
-		frames[f1] = ScrambleSlowData([3]byte{tag, padded[off], padded[off+1]}, f1)
-		frames[f2] = ScrambleSlowData([3]byte{padded[off+2], padded[off+3], padded[off+4]}, f2)
+		frames[f1] = ScrambleSlowData([3]byte{seg[0], seg[1], seg[2]}, f1)
+		frames[f2] = ScrambleSlowData([3]byte{seg[3], seg[4], seg[5]}, f2)
 	}
 
 	for i := 9; i <= MaxSeq; i++ {

@@ -180,18 +180,37 @@ func TestRXStreamWithoutEndDoesNotCarryHeaderOver(t *testing.T) {
 	}
 }
 
-// transmit sends a header and n voice frames from the radio, returning the
-// frames the router forwarded to the reflector.
-func transmit(t *testing.T, rad *fakeRadio, ref *fakeReflector, n int, radioSlow [3]byte) []dstar.DVFrame {
+// radioStream builds n frames of radio slow data from a repeating sequence
+// of unscrambled blocks (one block per odd/even frame pair).
+func radioStream(n int, blocks [][6]byte) []dstar.DVFrame {
+	var frames []dstar.DVFrame
+	next := 0
+	var cur [6]byte
+	for i := 0; i < n; i++ {
+		seq := uint8(i % (dstar.MaxSeq + 1))
+		f := dstar.DVFrame{Seq: seq, End: i == n-1}
+		switch {
+		case seq == 0:
+			f.SlowData = dstar.SyncSlowData
+		case seq%2 == 1:
+			cur = blocks[next%len(blocks)]
+			next++
+			f.SlowData = dstar.ScrambleSlowData([3]byte{cur[0], cur[1], cur[2]}, seq)
+		default:
+			f.SlowData = dstar.ScrambleSlowData([3]byte{cur[3], cur[4], cur[5]}, seq)
+		}
+		frames = append(frames, f)
+	}
+	return frames
+}
+
+// transmit sends a header and the frames from the radio, returning the frames
+// the router forwarded to the reflector.
+func transmit(t *testing.T, rad *fakeRadio, ref *fakeReflector, frames []dstar.DVFrame) []dstar.DVFrame {
 	t.Helper()
 	rad.hdrCh <- dstar.DVHeader{MyCall: "KR4GCQ  ", YourCall: "CQCQCQ  ", RPT1: "KR4GCQ D", RPT2: "REF001 C"}
 	var out []dstar.DVFrame
-	for i := 0; i < n; i++ {
-		seq := uint8(i % (dstar.MaxSeq + 1))
-		f := dstar.DVFrame{Seq: seq, SlowData: radioSlow, End: i == n-1}
-		if seq == 0 {
-			f.SlowData = dstar.SyncSlowData
-		}
+	for i, f := range frames {
 		rad.frmCh <- f
 		select {
 		case fr := <-ref.txCh:
@@ -203,112 +222,101 @@ func transmit(t *testing.T, rad *fakeRadio, ref *fakeReflector, n int, radioSlow
 	return out
 }
 
-const testTNC2 = "KR4GCQ-1>APDPRS,DSTAR*:!3513.91N/08051.27W[RefConnect"
+// decodeSlowData reads forwarded frames the way a reflector does, returning
+// the text message and any DPRS sentences.
+func decodeSlowData(frames []dstar.DVFrame) (text string, dprs []string) {
+	msg := []byte("                    ")
+	var dec dstar.DPRSDecoder
+	var first [3]byte
+	for _, f := range frames {
+		dprs = append(dprs, dec.Feed(f.SlowData, f.Seq)...)
+		if f.Seq == 0 {
+			continue
+		}
+		d := dstar.ScrambleSlowData(f.SlowData, f.Seq)
+		if f.Seq%2 == 1 {
+			first = d
+			continue
+		}
+		if first[0]&0xF0 == dstar.BlockTypeMessage {
+			n := int(first[0] & 0x03)
+			copy(msg[n*5:], []byte{first[1], first[2], d[0], d[1], d[2]})
+		}
+	}
+	return string(msg), dprs
+}
 
-func TestTXCarriesTextThenDPRSPosition(t *testing.T) {
+const testTNC2 = "KR4GCQ-1>APDPRS,DSTAR*:!3513.91N/08051.26W[RefConnect"
+
+var fillerOnly = [][6]byte{dstar.FillerBlock}
+
+func TestTXSendsTextAndPositionWhenRadioSendsNeither(t *testing.T) {
 	_, rad, ref := startRouterWith(t, Config{
 		TXText: "RefConnect by KR4GCQ",
 		DPRS:   func() (string, bool) { return testTNC2, true },
 	})
-	frames := transmit(t, rad, ref, 5*(dstar.MaxSeq+1), [3]byte{0x16, 0x29, 0xF5})
+	// Under one second, like the on-air test: both must still fit.
+	out := transmit(t, rad, ref, radioStream(44, fillerOnly))
 
-	text := dstar.EncodeTextMessage("RefConnect by KR4GCQ")
-	for i := 0; i <= dstar.MaxSeq; i++ {
-		if frames[i].SlowData != text[i] {
-			t.Fatalf("first superframe frame %d = % X, want text message % X", i, frames[i].SlowData, text[i])
-		}
+	text, dprs := decodeSlowData(out)
+	if text != "RefConnect by KR4GCQ" {
+		t.Errorf("text message = %q", text)
 	}
-
-	// A reflector decoding the rest of the stream finds our position.
-	var dec dstar.DPRSDecoder
-	var sentences []string
-	for _, f := range frames[dstar.MaxSeq+1:] {
-		sentences = append(sentences, dec.Feed(f.SlowData, f.Seq)...)
+	if len(dprs) == 0 {
+		t.Fatal("no DPRS sentence in a 44-frame transmission")
 	}
-	if len(sentences) == 0 {
-		t.Fatal("no DPRS sentence in the transmission")
+	if payload, ok := aprs.ValidateDPRS(dprs[0]); !ok || payload != testTNC2 {
+		t.Errorf("DPRS %q: payload=%q valid=%v, want %q", dprs[0], payload, ok, testTNC2)
 	}
-	payload, ok := aprs.ValidateDPRS(sentences[0])
-	if !ok || payload != testTNC2 {
-		t.Fatalf("DPRS sentence %q: payload=%q valid=%v, want %q", sentences[0], payload, ok, testTNC2)
-	}
-	for i, f := range frames {
+	for i, f := range out {
 		if f.Seq == 0 && f.SlowData != dstar.SyncSlowData {
 			t.Fatalf("frame %d (seq 0) lost its sync pattern", i)
 		}
 	}
 }
 
-func TestTXPassesRadioSlowDataWithoutPosition(t *testing.T) {
-	radioSlow := [3]byte{0x16, 0x29, 0xF5}
+func TestTXWithoutPositionPassesRadioFiller(t *testing.T) {
 	_, rad, ref := startRouterWith(t, Config{
 		TXText: "RefConnect by KR4GCQ",
 		DPRS:   func() (string, bool) { return "", false },
 	})
-	frames := transmit(t, rad, ref, 3*(dstar.MaxSeq+1), radioSlow)
-	for i, f := range frames[dstar.MaxSeq+1:] {
-		want := radioSlow
-		if f.Seq == 0 {
-			want = dstar.SyncSlowData
-		}
-		if f.SlowData != want {
-			t.Fatalf("frame %d after the first superframe = % X, want the radio's % X", dstar.MaxSeq+1+i, f.SlowData, want)
+	in := radioStream(3*(dstar.MaxSeq+1), fillerOnly)
+	out := transmit(t, rad, ref, in)
+
+	if text, dprs := decodeSlowData(out); text != "RefConnect by KR4GCQ" || len(dprs) != 0 {
+		t.Errorf("text=%q dprs=%q, want our text and no DPRS", text, dprs)
+	}
+	// After the text message's four blocks, the radio's filler passes through.
+	for i := 9; i < len(out); i++ {
+		if out[i].SlowData != in[i].SlowData {
+			t.Fatalf("frame %d = % X, want the radio's % X", i, out[i].SlowData, in[i].SlowData)
 		}
 	}
 }
 
-// scrambledBlock returns the two scrambled frames carrying one 6-byte block.
-func scrambledBlock(seg [6]byte, seq uint8) (a, b [3]byte) {
-	return dstar.ScrambleSlowData([3]byte{seg[0], seg[1], seg[2]}, seq),
-		dstar.ScrambleSlowData([3]byte{seg[3], seg[4], seg[5]}, seq+1)
-}
-
-// A radio's own TX message (interleaved with its GPS, as the IC-705 does)
-// must not leak through after the first superframe; its GPS must.
-func TestTXPassThroughBlanksRadioTextKeepsGPS(t *testing.T) {
+// An IC-705 with a TX message and GPS interleaves the two. Its message must
+// be replaced by ours and its GPS must reach the reflector intact, rather
+// than our position being mixed in.
+func TestTXReplacesRadioTextKeepsRadioGPS(t *testing.T) {
 	_, rad, ref := startRouterWith(t, Config{
 		TXText: "RefConnect by KR4GCQ",
-		DPRS:   func() (string, bool) { return "", false },
+		DPRS:   func() (string, bool) { return testTNC2, true },
 	})
-	gps := [6]byte{0x35, '$', '$', 'C', 'R', 'C'}
-	msg := [6]byte{0x40, 'D', 'a', 'v', 'e', ' '}
-
-	rad.hdrCh <- dstar.DVHeader{MyCall: "KR4GCQ  ", YourCall: "CQCQCQ  ", RPT1: "KR4GCQ D", RPT2: "REF001 C"}
-	var out []dstar.DVFrame
-	for i := 0; i < 2*(dstar.MaxSeq+1); i++ {
-		seq := uint8(i % (dstar.MaxSeq + 1))
-		f := dstar.DVFrame{Seq: seq, SlowData: dstar.SyncSlowData}
-		if seq != 0 {
-			// Alternate GPS and message blocks: 1-2 GPS, 3-4 message, ...
-			first := seq
-			if seq%2 == 0 {
-				first = seq - 1
-			}
-			seg := gps
-			if (first/2)%2 == 1 {
-				seg = msg
-			}
-			a, b := scrambledBlock(seg, first)
-			f.SlowData = a
-			if seq%2 == 0 {
-				f.SlowData = b
-			}
-		}
-		rad.frmCh <- f
-		out = append(out, <-ref.txCh)
+	radioDPRS := aprs.WrapDPRS("KR4GCQ>API705,DSTAR*:!3513.91N/08051.26W[/")
+	radioText := dstar.TextMessageBlocks("Dave - CLT, NC")
+	gps := dstar.DPRSBlocks(radioDPRS)
+	// Message, message, GPS, message, GPS, ... as captured from the IC-705.
+	var blocks [][6]byte
+	for i, g := range gps {
+		blocks = append(blocks, radioText[i%4], g)
 	}
+	out := transmit(t, rad, ref, radioStream(4*(dstar.MaxSeq+1), blocks))
 
-	for i, f := range out[dstar.MaxSeq+1:] {
-		seq := f.Seq
-		if seq == 0 || seq%2 == 0 {
-			continue
-		}
-		typ := dstar.ScrambleSlowData(f.SlowData, seq)[0] & 0xF0
-		if typ == 0x40 {
-			t.Fatalf("frame %d: radio text block passed through", dstar.MaxSeq+1+i)
-		}
-		if (seq/2)%2 == 0 && typ != 0x30 {
-			t.Fatalf("frame %d: radio GPS block type %02X, want 0x3x", dstar.MaxSeq+1+i, typ)
-		}
+	text, dprs := decodeSlowData(out)
+	if text != "RefConnect by KR4GCQ" {
+		t.Errorf("text message = %q, want ours", text)
+	}
+	if len(dprs) == 0 || dprs[0] != radioDPRS {
+		t.Errorf("DPRS = %q, want the radio's %q", dprs, radioDPRS)
 	}
 }

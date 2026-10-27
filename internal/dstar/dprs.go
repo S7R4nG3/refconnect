@@ -28,6 +28,22 @@ func nextDataSeq(seq uint8, out *[][3]byte) uint8 {
 	return seq
 }
 
+// DPRSBlocks chunks a DPRS sentence into unscrambled 6-byte GPS-data
+// slow-data blocks: a header byte (0x30 | payload length) followed by up to
+// 5 payload bytes, right-padded with 0x00.
+func DPRSBlocks(sentence string) [][6]byte {
+	data := []byte(sentence)
+	var blocks [][6]byte
+	for i := 0; i < len(data); i += 5 {
+		chunk := data[i:min(i+5, len(data))]
+		var seg [6]byte
+		seg[0] = gpsSegHeaderMask | byte(len(chunk))
+		copy(seg[1:], chunk)
+		blocks = append(blocks, seg)
+	}
+	return blocks
+}
+
 // EncodeDPRSFrames chunks a DPRS sentence into scrambled slow-data triplets,
 // one per outgoing D-STAR voice frame. startSeq is the sequence number of
 // the first emitted frame; each subsequent frame increments seq (mod 21),
@@ -39,7 +55,6 @@ func nextDataSeq(seq uint8, out *[][3]byte) uint8 {
 // Returns a slice of [3]byte triplets (already scrambled) ready to drop
 // into consecutive DVFrame.SlowData fields.
 func EncodeDPRSFrames(sentence string, startSeq uint8) [][3]byte {
-	data := []byte(sentence)
 	var out [][3]byte
 	seq := startSeq
 
@@ -49,17 +64,7 @@ func EncodeDPRSFrames(sentence string, startSeq uint8) [][3]byte {
 		seq = (seq + 1) % (MaxSeq + 1)
 	}
 
-	for i := 0; i < len(data); i += 5 {
-		end := i + 5
-		if end > len(data) {
-			end = len(data)
-		}
-		chunk := data[i:end]
-		// Build the 6-byte unscrambled segment: header + up-to-5 payload bytes,
-		// right-padded with 0x00 if the chunk is shorter than 5.
-		var seg [6]byte
-		seg[0] = gpsSegHeaderMask | byte(len(chunk))
-		copy(seg[1:], chunk)
+	for _, seg := range DPRSBlocks(sentence) {
 		// Emit across two consecutive voice frames.
 		out = append(out, ScrambleSlowData([3]byte{seg[0], seg[1], seg[2]}, seq))
 		seq = nextDataSeq(seq, &out)

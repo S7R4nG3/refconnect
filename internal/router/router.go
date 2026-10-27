@@ -64,15 +64,16 @@ type Config struct {
 	ReflectorCall string
 
 	// TXText is a D-STAR slow data text message (up to 20 chars) sent in
-	// the first superframe of each outgoing transmission. It appears as the
-	// "User Message" on reflector status pages and ircDDB Last Heard listings.
+	// each outgoing transmission in place of the radio's own TX message. It
+	// appears as the "User Message" on reflector status pages and ircDDB Last
+	// Heard listings.
 	TXText string
 
 	// DPRS, if set, returns the TNC2 APRS position packet to embed as DPRS in
-	// the rest of each outgoing transmission, so reflector dashboards can show
-	// the station on a map. ok=false passes the radio's own slow data through
-	// instead (which carries its GPS, if enabled). It is called from the TX
-	// goroutine about once per second while transmitting.
+	// outgoing transmissions whose radio isn't sending GPS of its own, so
+	// reflector dashboards can show the station on a map. ok=false sends
+	// none. It is called from the TX goroutine about once a second while
+	// transmitting.
 	DPRS func() (tnc2 string, ok bool)
 }
 
@@ -118,20 +119,18 @@ type Router struct {
 	rxSent          int // ...of which written to the radio
 	rxEventsDropped int // ...of which the UI never saw (event queue full)
 
-	// txDPRS holds the scrambled slow data of the DPRS sentence being sent in
-	// the current transmission; txDPRSIdx is the next triplet to send. Owned
-	// by txLoop.
-	txDPRS    [][3]byte
-	txDPRSIdx int
+	// TX slow-data state for the current transmission, owned by txLoop (see
+	// txSlowData).
+	txTextSent   [4]bool   // which of our text blocks have been sent
+	txGPS        gpsSource // whose GPS data this transmission carries
+	txDPRS       [][6]byte // our DPRS sentence being sent, as blocks
+	txDPRSIdx    int       // next block of txDPRS to send
 	txDPRSLogged bool
-	// txBlankBlock is set while passing through a radio slow-data block that
-	// is being blanked (see passRadioSlowData). Owned by txLoop.
-	txBlankBlock bool
+	txPending    [3]byte // second half of the block we're sending
+	txPendingSeq uint8   // seq the second half belongs to; 0 = pass through
 
-	// txText holds pre-scrambled slow data for a 20-char D-STAR text
-	// message injected into every outgoing superframe. This appears as
-	// the "User Message" on reflector status pages.
-	txText [dstar.MaxSeq + 1][3]byte
+	// txText holds the slow-data blocks of the 20-char D-STAR text message.
+	txText [4][6]byte
 }
 
 // New creates a Router.  Call Start to begin routing.
@@ -145,7 +144,7 @@ func New(r radio.RadioInterface, ref protocol.Reflector, cfg Config) *Router {
 		gps:       &aprs.Cache{},
 	}
 	if cfg.TXText != "" {
-		rt.txText = dstar.EncodeTextMessage(cfg.TXText)
+		rt.txText = dstar.TextMessageBlocks(cfg.TXText)
 		log.Printf("router: TX text message: %q", cfg.TXText)
 	}
 	return rt
@@ -254,7 +253,9 @@ func (rt *Router) txLoop() {
 			rt.dprsDec.Reset()
 			rt.slowDump = rt.slowDump[:0]
 			rt.gotFixThisTX = false
+			rt.txTextSent, rt.txGPS = [4]bool{}, gpsNone
 			rt.txDPRS, rt.txDPRSIdx, rt.txDPRSLogged = nil, 0, false
+			rt.txPendingSeq = 0
 			rt.txFrameCount = 0
 			rt.rewriteHeaderForReflector(&hdr)
 			if err := rt.reflector.SendHeader(hdr); err != nil {
@@ -347,61 +348,106 @@ func printableASCII(b []byte) string {
 	return string(out)
 }
 
-// txSlowData picks the slow data forwarded to the reflector for one TX frame.
-// The first superframe carries the text message (the dashboard "User
-// Message"). Later superframes carry the APRS position as DPRS, so dashboards
-// can map the station, or the radio's own slow data (e.g. its GPS) when there
-// is no position to send. A DPRS sentence spans more than one superframe; it
-// restarts at the first sync frame after it finishes.
+// gpsSource records whose GPS data a transmission carries, so the radio's
+// and our DPRS sentences are never interleaved (receivers concatenate GPS
+// blocks into one sentence).
+type gpsSource int
+
+const (
+	gpsNone  gpsSource = iota
+	gpsRadio           // the radio's own GPS passes through
+	gpsOurs            // we embed the position from Config.DPRS
+)
+
+// txSlowData picks the slow data forwarded to the reflector for one TX frame,
+// working in 6-byte blocks (an odd/even frame pair), the way radios mix their
+// TX message and GPS:
+//
+//   - the radio's text-message blocks are replaced by ours, block for block;
+//   - the radio's GPS blocks pass through unchanged, from the first frame;
+//   - idle blocks carry our text message (if not yet sent this transmission),
+//     then our DPRS position when the radio isn't sending GPS of its own;
+//   - anything else passes through.
 func (rt *Router) txSlowData(frm dstar.DVFrame) [3]byte {
 	seq := frm.Seq % (dstar.MaxSeq + 1)
-	if rt.txFrameCount <= dstar.MaxSeq+1 {
-		if rt.cfg.TXText != "" {
-			return rt.txText[seq]
+	if seq == 0 {
+		return frm.SlowData // sync
+	}
+	if seq%2 == 0 {
+		if rt.txPendingSeq == seq {
+			rt.txPendingSeq = 0
+			return dstar.ScrambleSlowData(rt.txPending, seq)
 		}
 		return frm.SlowData
 	}
-	if seq == 0 && rt.txDPRSIdx >= len(rt.txDPRS) {
-		rt.txDPRS, rt.txDPRSIdx = nil, 0
-		if rt.cfg.DPRS != nil {
-			if tnc2, ok := rt.cfg.DPRS(); ok {
-				rt.txDPRS = dstar.EncodeDPRSFrames(aprs.WrapDPRS(tnc2), 0)
-				if !rt.txDPRSLogged {
-					rt.txDPRSLogged = true
-					log.Printf("router: embedding DPRS position in TX: %s", tnc2)
+	radioType := dstar.ScrambleSlowData(frm.SlowData, seq)[0]
+	block, replace := rt.txBlock(radioType)
+	if !replace {
+		rt.txPendingSeq = 0
+		return frm.SlowData
+	}
+	copy(rt.txPending[:], block[3:])
+	rt.txPendingSeq = seq + 1
+	return dstar.ScrambleSlowData([3]byte{block[0], block[1], block[2]}, seq)
+}
+
+// txBlock decides what replaces the radio's slow-data block of the given
+// type (its first, unscrambled byte). replace=false passes the radio's block.
+func (rt *Router) txBlock(radioType byte) (block [6]byte, replace bool) {
+	switch radioType & 0xF0 {
+	case dstar.BlockTypeMessage:
+		if rt.cfg.TXText == "" {
+			return block, false
+		}
+		n := radioType & 0x03
+		rt.txTextSent[n] = true
+		return rt.txText[n], true
+	case dstar.BlockTypeGPS:
+		if rt.txGPS == gpsOurs {
+			return dstar.FillerBlock, true // ours is in progress
+		}
+		rt.txGPS = gpsRadio
+		return block, false
+	case dstar.BlockTypeFiller, 0x00:
+		if rt.cfg.TXText != "" {
+			for n, sent := range rt.txTextSent {
+				if !sent {
+					rt.txTextSent[n] = true
+					return rt.txText[n], true
 				}
 			}
 		}
+		if rt.txGPS != gpsRadio {
+			if b, ok := rt.nextDPRSBlock(); ok {
+				rt.txGPS = gpsOurs
+				return b, true
+			}
+		}
 	}
-	if rt.txDPRS == nil {
-		return rt.passRadioSlowData(frm.SlowData, seq)
-	}
-	if rt.txDPRSIdx < len(rt.txDPRS) {
-		sd := rt.txDPRS[rt.txDPRSIdx]
-		rt.txDPRSIdx++
-		return sd
-	}
-	return dstar.NullSlowData(seq) // sentence sent; idle until the next superframe
+	return block, false
 }
 
-// passRadioSlowData forwards the radio's own slow data (e.g. its GPS), but
-// blanks its text-message blocks (type 0x4x). Radios interleave their TX
-// message with GPS data; passed through, those blocks would overwrite the
-// text message sent in the first superframe and leave the reflector with a
-// fragment of each. A 6-byte block spans an odd/even frame pair after the
-// sync frame, and its first byte gives its type.
-func (rt *Router) passRadioSlowData(sd [3]byte, seq uint8) [3]byte {
-	if seq == 0 {
-		return sd
+// nextDPRSBlock returns the next block of our DPRS position sentence,
+// starting a fresh sentence (with the current position) after the last one.
+func (rt *Router) nextDPRSBlock() ([6]byte, bool) {
+	if rt.txDPRSIdx >= len(rt.txDPRS) {
+		rt.txDPRS, rt.txDPRSIdx = nil, 0
+		if rt.cfg.DPRS == nil {
+			return [6]byte{}, false
+		}
+		tnc2, ok := rt.cfg.DPRS()
+		if !ok {
+			return [6]byte{}, false
+		}
+		rt.txDPRS = dstar.DPRSBlocks(aprs.WrapDPRS(tnc2))
+		if !rt.txDPRSLogged {
+			rt.txDPRSLogged = true
+			log.Printf("router: embedding DPRS position in TX: %s", tnc2)
+		}
 	}
-	if seq%2 == 1 {
-		d := dstar.ScrambleSlowData(sd, seq)
-		rt.txBlankBlock = d[0]&0xF0 == 0x40
-	}
-	if rt.txBlankBlock {
-		return dstar.NullSlowData(seq)
-	}
-	return sd
+	b := rt.txDPRS[rt.txDPRSIdx]
+	rt.txDPRSIdx++
+	return b, true
 }
 
 // handleDPRSSentence validates a slow-data DPRS sentence, parses the
