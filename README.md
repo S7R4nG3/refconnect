@@ -77,7 +77,7 @@ ui:
 
 ## Usage
 
-1. **Select your radio** — Choose the protocol (ICOM or Kenwood) and serial port in the Radio panel, then click **Open**.
+1. **Connect your radio** — Plug in your radio and turn it on. RefConnect detects supported radios, selects the right serial port and sets the protocol (ICOM or Kenwood) automatically; the hint under the port selector shows the radio's status. For a radio it doesn't recognise, select its port and choose the protocol yourself.
 2. **Select a reflector** — Choose a saved reflector profile from the Profile dropdown, or fill in Type/ID/Domain/Module to create a new one.
 3. **Enter your callsign** — Set your callsign and gateway module suffix.
 4. **Click Connect** — The status panel will update once the link is established. The connected profile is remembered and reselected automatically on the next launch.

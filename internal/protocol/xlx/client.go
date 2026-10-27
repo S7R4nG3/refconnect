@@ -2,6 +2,7 @@ package xlx
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -200,7 +201,8 @@ func (c *Client) rxLoop() {
 		}
 
 		hdr, frm, err := parsePacket(buf[:n])
-		if err != nil {
+		var crcErr *dstar.CRCError
+		if err != nil && !errors.As(err, &crcErr) {
 			continue
 		}
 		if hdr != nil {
@@ -217,6 +219,11 @@ func (c *Client) rxLoop() {
 				c.rxStreamID = sid
 				c.rxStreamActive = true
 				log.Printf("xlx: new RX stream %04X — forwarding header", sid)
+				if crcErr != nil {
+					// Logged once per stream; the reflector repeats the header.
+					log.Printf("xlx: stream %04X header CRC is wrong (got %04X, want %04X) — accepting it anyway",
+						sid, crcErr.Got, crcErr.Want)
+				}
 			}
 			c.mu.Unlock()
 			if dup {

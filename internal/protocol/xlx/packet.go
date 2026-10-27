@@ -105,6 +105,7 @@ func encodeVoice(streamID uint16, f dstar.DVFrame) []byte {
 }
 
 // parsePacket decodes a received xlxd DSVT UDP payload.
+// A header with a wrong CRC is returned together with a *dstar.CRCError.
 // Voice header: 56 bytes, tag[8]==0x20, type==0x10
 // Voice frame:  27 bytes, tag[8]==0x20, type==0x20
 // Non-DSVT packets (keepalives, control) are silently ignored.
@@ -123,11 +124,9 @@ func parsePacket(data []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 		}
 		var raw [dstar.HeaderBytes]byte
 		copy(raw[:], data[15:56])
+		// A *dstar.CRCError comes back with the header; the caller accepts it.
 		h, err := dstar.DecodeNetworkHeader(raw)
-		if err != nil {
-			return nil, nil, err
-		}
-		return &h, nil, nil
+		return &h, nil, err
 
 	case 0x20: // voice
 		if len(data) < 27 {

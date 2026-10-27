@@ -1,96 +1,452 @@
 package ui
 
 import (
-	"go.bug.st/serial"
+	"log"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/S7R4nG3/refconnect/internal/config"
+	"github.com/S7R4nG3/refconnect/internal/radio"
 )
 
-// radioProtocols maps display labels to config values.
-var radioProtocols = map[string]string{
-	"ICOM (DV Gateway)": "DV-GW",
-	"Kenwood (MMDVM)":   "MMDVM",
+const noPortsLabel = "(no ports found)"
+
+const (
+	scanInterval = 3 * time.Second
+	// busyHintAfter is how long a port may stay busy before we blame
+	// another program; ModemManager holds new ports for up to ~30s.
+	busyHintAfter = 30 * time.Second
+	probeTimeout  = 1500 * time.Millisecond
+	reprobeAfter  = 15 * time.Second
+)
+
+// portScanner keeps the port selector in sync with attached radios: it
+// labels known radios, selects the most likely DV data port (and sets the
+// radio protocol to match, so users never choose it), confirms Icom
+// ports with a DV Gateway poll, and picks up radios plugged in later.
+type portScanner struct {
+	a          *App
+	portSelect *widget.Select
+	hint       *widget.Label
+	// protoRow lets the user choose the protocol for a port that isn't a
+	// recognised radio (e.g. Windows Bluetooth COM ports); hidden otherwise.
+	protoRow    *fyne.Container
+	protoSelect *widget.Select
+
+	// Scan goroutine state, guarded by scanMu.
+	scanMu    sync.Mutex
+	verified  map[string]bool      // ports that answered a probe
+	probed    map[string]time.Time // last failed probe per port
+	busySince map[string]time.Time // ports another program had open at last probe
+	denied    map[string]bool      // ports we lack permission to open
+	lastLog   string               // port list last written to the log
+
+	// UI-thread state.
+	ports      []radio.DetectedPort
+	failed     map[string]bool // ports whose last probe got no answer
+	busyLong   map[string]bool // ports busy for longer than busyHintAfter
+	deniedUI   map[string]bool // ports we lack permission to open
+	userPicked string          // port the user chose by hand this session
+	locked     bool            // radio in use; selection disabled until disconnect
+	updating   bool            // suppresses OnChanged during programmatic updates
 }
-var radioProtocolLabels = []string{"ICOM (DV Gateway)", "Kenwood (MMDVM)"}
 
-// refreshPorts enumerates serial ports and updates the Select widget.
-// It preserves the current selection when possible and falls back to
-// the first available port (or the config-saved port) otherwise.
-func refreshPorts(portSelect *widget.Select, cfg *config.Config) {
-	ports, _ := serial.GetPortsList()
-	if len(ports) == 0 {
-		ports = []string{"(no ports found)"}
+// scan enumerates ports, publishes them, then probes unconfirmed Icom ports
+// and publishes again if any answered. force discards cached probe results.
+func (s *portScanner) scan(force bool) {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	if s.a.radioBusy.Load() {
+		return
+	}
+	if force {
+		s.verified = map[string]bool{}
+		s.probed = map[string]time.Time{}
+		s.busySince = map[string]time.Time{}
+		s.denied = map[string]bool{}
 	}
 
-	// Determine the best selection before touching any widgets.
-	current := portSelect.Selected
-	best := ""
+	ports := radio.DetectPorts()
+	present := map[string]bool{}
+	for i := range ports {
+		present[ports[i].Name] = true
+		if s.verified[ports[i].Name] {
+			ports[i].MarkVerified()
+		}
+	}
+	// Forget ports that were unplugged so a re-plugged radio is re-probed.
+	for name := range s.verified {
+		if !present[name] {
+			delete(s.verified, name)
+		}
+	}
+	for name := range s.probed {
+		if !present[name] {
+			delete(s.probed, name)
+		}
+	}
+	for name := range s.busySince {
+		if !present[name] {
+			delete(s.busySince, name)
+		}
+	}
+	for name := range s.denied {
+		if !present[name] {
+			delete(s.denied, name)
+		}
+	}
+	radio.SortPorts(ports)
+	s.logPorts(ports)
+	s.publish(ports)
+
+	changed := false
+	for i := range ports {
+		p := &ports[i]
+		if p.Protocol != radio.ProtocolDVGateway || !p.IsUSB || p.Verified || p.Role == radio.RoleCIV {
+			continue
+		}
+		if t, ok := s.probed[p.Name]; ok && time.Since(t) < reprobeAfter {
+			continue
+		}
+		if s.a.radioBusy.Load() {
+			return
+		}
+		ok, err := radio.ProbeDVGateway(p.Name, probeTimeout)
+		if radio.IsPortBusy(err) {
+			// Not an answer either way: retry on the next scan.
+			if _, seen := s.busySince[p.Name]; !seen {
+				s.busySince[p.Name] = time.Now()
+				log.Printf("detect: probe %s: port busy (another program has it open), will retry", p.Name)
+			}
+			changed = true
+			continue
+		}
+		delete(s.busySince, p.Name)
+		if radio.IsPermissionDenied(err) {
+			if !s.denied[p.Name] {
+				log.Printf("detect: probe %s: permission denied", p.Name)
+			}
+			s.denied[p.Name] = true
+			s.probed[p.Name] = time.Now()
+			changed = true
+			continue
+		}
+		delete(s.denied, p.Name)
+		switch {
+		case err != nil:
+			log.Printf("detect: probe %s: %v", p.Name, err)
+		case ok:
+			log.Printf("detect: probe %s: DV Gateway answered", p.Name)
+		default:
+			log.Printf("detect: probe %s: no answer", p.Name)
+		}
+		if ok {
+			s.verified[p.Name] = true
+			delete(s.probed, p.Name)
+			p.MarkVerified()
+			changed = true
+		} else {
+			s.probed[p.Name] = time.Now()
+			changed = true // hint changes from "checking" to "not answering"
+		}
+	}
+	if changed {
+		radio.SortPorts(ports)
+		s.publish(ports)
+	}
+}
+
+// logPorts writes the detected port list to the log whenever it changes,
+// so users can share VID/PID details for radios we don't know yet.
+func (s *portScanner) logPorts(ports []radio.DetectedPort) {
+	var b strings.Builder
+	b.WriteString("ports:") // never equals the initial empty lastLog, so an empty list is logged too
 	for _, p := range ports {
-		if p == current {
-			best = p
-			break
-		}
-		if p == cfg.Radio.Port && best == "" {
-			best = p
-		}
+		b.WriteString(p.Name + "|" + p.VID + ":" + p.PID + "|" + p.SerialNumber + "|" + p.BTName + "\n")
 	}
-	if best == "" && len(ports) > 0 && ports[0] != "(no ports found)" {
-		best = ports[0]
+	if b.String() == s.lastLog {
+		return
 	}
+	s.lastLog = b.String()
+	log.Printf("detect: %d serial port(s):", len(ports))
+	for _, p := range ports {
+		log.Printf("detect:   %-32s usb=%v vid:pid=%s:%s serial=%q product=%q bt=%v bt_addr=%s bt_name=%q model=%q role=%q score=%d",
+			p.Name, p.IsUSB, p.VID, p.PID, p.SerialNumber, p.Product, p.Bluetooth, p.BTAddr, p.BTName, p.Model, p.Role, p.Score)
+	}
+}
 
-	// All widget mutations must go through fyne.Do when called from a goroutine.
-	fyne.Do(func() {
-		portSelect.Options = ports
-		if best != "" {
-			portSelect.SetSelected(best)
-			cfg.Radio.Port = best
+// publish pushes a port list to the widgets on the UI thread.
+func (s *portScanner) publish(ports []radio.DetectedPort) {
+	ports = append([]radio.DetectedPort(nil), ports...)
+	failed, busyLong, denied := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for name := range s.probed {
+		if s.denied[name] {
+			denied[name] = true
+		} else {
+			failed[name] = true
 		}
-		portSelect.Refresh()
+	}
+	for name, since := range s.busySince {
+		if time.Since(since) >= busyHintAfter {
+			busyLong[name] = true
+		}
+	}
+	fyne.Do(func() {
+		s.ports = ports
+		s.failed = failed
+		s.busyLong = busyLong
+		s.deniedUI = denied
+
+		labels := make([]string, len(ports))
+		for i, p := range ports {
+			labels[i] = p.Label()
+		}
+		if len(labels) == 0 {
+			labels = []string{noPortsLabel}
+		}
+
+		i := s.choose()
+		if slices.Equal(labels, s.portSelect.Options) && (i < 0 || labels[i] == s.portSelect.Selected) {
+			// Nothing visible changed; avoid disturbing an open dropdown.
+			s.updateHint()
+			return
+		}
+
+		s.updating = true
+		s.portSelect.Options = labels
+		if i >= 0 {
+			p := ports[i]
+			s.selectPort(p)
+			s.portSelect.SetSelected(labels[i])
+		} else {
+			s.portSelect.ClearSelected()
+		}
+		s.portSelect.Refresh()
+		s.updating = false
+
+		s.updateHint()
 	})
 }
 
-// buildPTTPanel returns the serial port and protocol selectors.
-// Selections are written back to a.cfg.Radio immediately on change
+// choose returns the index in s.ports to select, or -1 if there are none.
+// Order: the user's own pick, then a recognised radio (the saved port wins
+// a tie), then the saved port, then the first port.
+func (s *portScanner) choose() int {
+	if len(s.ports) == 0 {
+		return -1
+	}
+	saved := s.a.cfg.Radio.Port
+	idx := func(name string) int {
+		for i, p := range s.ports {
+			if p.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	if i := idx(s.userPicked); s.userPicked != "" && i >= 0 {
+		return i
+	}
+	best := s.ports[0]
+	if best.IsRadio() {
+		if i := idx(saved); i >= 0 && s.ports[i].Score == best.Score {
+			return i
+		}
+		return 0
+	}
+	if i := idx(saved); i >= 0 {
+		return i
+	}
+	return 0
+}
+
+// onPortChanged handles a port picked from the dropdown.
+func (s *portScanner) onPortChanged(label string) {
+	if s.updating || label == noPortsLabel {
+		return
+	}
+	for _, p := range s.ports {
+		if p.Label() == label {
+			s.userPicked = p.Name
+			s.selectPort(p)
+			break
+		}
+	}
+	s.updateHint()
+}
+
+// selectPort makes p the radio port. A recognised radio also sets the
+// protocol; for anything else the saved protocol is kept.
+func (s *portScanner) selectPort(p radio.DetectedPort) {
+	s.a.cfg.Radio.Port = p.Name
+	if p.Protocol != "" {
+		s.a.cfg.Radio.Protocol = p.Protocol
+	}
+}
+
+// updateHint explains the selected port's state in plain language, and shows
+// the protocol selector when the selected port isn't a recognised radio.
+func (s *portScanner) updateHint() {
+	var sel *radio.DetectedPort
+	for i := range s.ports {
+		if s.ports[i].Name == s.a.cfg.Radio.Port {
+			sel = &s.ports[i]
+		}
+	}
+	s.updateProtocol(sel)
+
+	if s.locked {
+		s.hint.SetText("Disconnect from the reflector to change radios.")
+		s.hint.Show()
+		return
+	}
+	anyRadio := len(s.ports) > 0 && s.ports[0].IsRadio()
+
+	var text string
+	switch {
+	case !anyRadio && sel != nil:
+		text = "No radio detected. If this port is your radio, choose its protocol below; otherwise connect your radio with a USB cable and turn it on."
+	case !anyRadio:
+		text = "No radio detected. Connect your radio with a USB cable and turn it on."
+	case sel == nil || !sel.IsRadio():
+		text = "A radio is connected, but a different port is selected."
+	case sel.Verified:
+		text = sel.Model + " is connected and responding."
+	case sel.Protocol == radio.ProtocolMMDVM:
+		link := "USB"
+		if sel.Bluetooth {
+			link = "Bluetooth"
+		}
+		text = sel.Model + " found. Put it in Reflector TERM mode (Menu 650) with Menu 985 set to " + link + " before connecting."
+	case sel.Role == radio.RoleCIV:
+		text = "This is the radio's CI-V control port. Choose its DV data port instead."
+	case s.deniedUI[sel.Name]:
+		text = "No permission to open " + filepath.Base(sel.Name) +
+			". Run \"sudo usermod -aG dialout $USER\", then log out and back in."
+	case s.busyLong[sel.Name]:
+		text = sel.Model + " found, but another program is using it. Close other radio software, then press refresh."
+	case s.failed[sel.Name]:
+		text = sel.Model + " found but not answering. " + dvGatewayHint(sel.Model)
+	default:
+		text = "Checking " + sel.Model + "…"
+	}
+	s.hint.SetText(text)
+	s.hint.Show()
+}
+
+// radioProtocols maps protocol selector labels to config values.
+var radioProtocols = map[string]string{
+	"ICOM (DV Gateway)": radio.ProtocolDVGateway,
+	"Kenwood (MMDVM)":   radio.ProtocolMMDVM,
+}
+var radioProtocolLabels = []string{"ICOM (DV Gateway)", "Kenwood (MMDVM)"}
+
+// updateProtocol shows the protocol selector, set to the saved protocol, for
+// a selected port that isn't a recognised radio. A recognised radio sets its
+// own protocol, so the selector is hidden for those.
+func (s *portScanner) updateProtocol(sel *radio.DetectedPort) {
+	if sel == nil || sel.IsRadio() {
+		s.protoRow.Hide()
+		return
+	}
+	for label, val := range radioProtocols {
+		if val == s.a.cfg.Radio.Protocol && s.protoSelect.Selected != label {
+			s.protoSelect.SetSelected(label)
+		}
+	}
+	if s.locked {
+		s.protoSelect.Disable()
+	} else {
+		s.protoSelect.Enable()
+	}
+	s.protoRow.Show()
+}
+
+// dvGatewayHint tells the user how to put an Icom radio into DV Gateway
+// Terminal mode on USB, with menu paths where known. Menu paths come from
+// Icom's documentation (ID-52: "About the DV Gateway function", July 2024).
+func dvGatewayHint(model string) string {
+	switch model {
+	case "Icom IC-705":
+		return "Set MENU › 2 › DV GW › Gateway Select to External Gateway (USB (B)), then select Terminal Mode."
+	case "Icom ID-52":
+		return "Set MENU › SET › Function › USB Connect to Serialport, then select MENU › DV Gateway › <<Terminal Mode>>."
+	}
+	return "Put it in DV Gateway Terminal mode on USB."
+}
+
+// buildPTTPanel returns the serial port selector. The selection (and the
+// protocol of a recognised radio) is written back to a.cfg.Radio immediately
 // so that the reflector Connect button can open the radio with current values.
 func buildPTTPanel(a *App) fyne.CanvasObject {
-	protoSelect := widget.NewSelect(radioProtocolLabels, func(label string) {
+	if a.cfg.Radio.Protocol != radio.ProtocolMMDVM {
+		a.cfg.Radio.Protocol = radio.ProtocolDVGateway
+	}
+
+	hint := widget.NewLabel("")
+	hint.Wrapping = fyne.TextWrapWord
+	hint.Importance = widget.LowImportance
+	hint.Hide()
+
+	s := &portScanner{
+		a:         a,
+		hint:      hint,
+		verified:  map[string]bool{},
+		probed:    map[string]time.Time{},
+		busySince: map[string]time.Time{},
+		denied:    map[string]bool{},
+	}
+
+	s.protoSelect = widget.NewSelect(radioProtocolLabels, func(label string) {
 		if val, ok := radioProtocols[label]; ok {
 			a.cfg.Radio.Protocol = val
 		}
 	})
-	// Set current selection from config.
-	for label, val := range radioProtocols {
-		if val == a.cfg.Radio.Protocol {
-			protoSelect.SetSelected(label)
-			break
-		}
-	}
-	if protoSelect.Selected == "" {
-		protoSelect.SetSelected(radioProtocolLabels[0])
-		a.cfg.Radio.Protocol = "DV-GW"
-	}
+	s.protoRow = container.NewGridWithColumns(2, widget.NewLabel("Protocol"), s.protoSelect)
+	s.protoRow.Hide()
 
 	// Start with a placeholder; enumerate ports in the background so
 	// the window appears immediately (serial enumeration is slow on Windows).
-	portSelect := widget.NewSelect([]string{"scanning…"}, func(p string) {
-		if p != "scanning…" && p != "(no ports found)" {
-			a.cfg.Radio.Port = p
-		}
-	})
+	s.portSelect = widget.NewSelect([]string{"scanning…"}, s.onPortChanged)
 
 	refreshBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
-		refreshPorts(portSelect, a.cfg)
+		s.userPicked = ""
+		go s.scan(true)
 	})
 
-	// Kick off the initial port scan in the background.
-	go refreshPorts(portSelect, a.cfg)
+	// Initial scan, then keep watching so a radio plugged in later shows up.
+	go func() {
+		s.scan(false)
+		for range time.Tick(scanInterval) {
+			s.scan(false)
+		}
+	}()
 
-	portRow := container.NewBorder(nil, nil, nil, refreshBtn, portSelect)
+	// Lock the selection while the radio is in use: swapping radios mid-session
+	// would cut off a transmission, leave the new radio without the current
+	// stream's header, and stall audio during its handshake.
+	a.radioInUse.AddListener(binding.NewDataListener(func() {
+		locked, _ := a.radioInUse.Get()
+		s.locked = locked
+		if locked {
+			s.portSelect.Disable()
+			refreshBtn.Disable()
+		} else {
+			s.portSelect.Enable()
+			refreshBtn.Enable()
+		}
+		s.updateHint()
+	}))
+
+	portRow := container.NewBorder(nil, nil, nil, refreshBtn, s.portSelect)
 
 	helpLink := widget.NewHyperlink("Need help? Check the docs!",
 		parseURL("https://github.com/S7R4nG3/refconnect/wiki/Connecting-Radios"))
@@ -99,13 +455,9 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 
 	return container.NewVBox(
 		widget.NewLabel("Radio"),
-		container.NewGridWithColumns(2,
-			widget.NewLabel("Protocol"),
-			protoSelect,
-		),
 		portRow,
-		helpLink,
-		aprsCheck,
+		s.protoRow,
+		hint,
+		container.NewBorder(nil, nil, aprsCheck, helpLink),
 	)
 }
-

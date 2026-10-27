@@ -3,8 +3,10 @@
 package router
 
 import (
+	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/S7R4nG3/refconnect/internal/aprs"
 	"github.com/S7R4nG3/refconnect/internal/beacon"
@@ -27,7 +29,22 @@ type Event struct {
 	Header    *dstar.DVHeader // non-nil when a new transmission starts
 	Frame     *dstar.DVFrame  // non-nil for voice frames
 	Err       error
+
+	// Delivered (RX only) reports that the header or voice frame was written
+	// to the radio, and for a frame, that this transmission's header was
+	// too, so the radio should be playing it.
+	Delivered bool
+	// Note is an informational message for the activity log.
+	Note string
 }
+
+// rxStreamGap is the silence after which the next RX voice frame is treated
+// as a new transmission (a stream that ended without an end-of-stream frame).
+var rxStreamGap = time.Second
+
+// noteNoHeader is logged once per transmission when reflector voice reaches
+// the radio without a header, e.g. one dropped for a bad CRC.
+const noteNoHeader = "Receiving voice from the reflector without a valid header — the radio may not play it."
 
 // Config controls router behaviour.
 type Config struct {
@@ -46,10 +63,18 @@ type Config struct {
 	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
 	ReflectorCall string
 
-	// TXText is a D-STAR slow data text message (up to 20 chars) injected
-	// into every outgoing superframe. It appears as the "User Message" on
-	// reflector status pages and ircDDB Last Heard listings.
+	// TXText is a D-STAR slow data text message (up to 20 chars) sent in
+	// each outgoing transmission in place of the radio's own TX message. It
+	// appears as the "User Message" on reflector status pages and ircDDB Last
+	// Heard listings.
 	TXText string
+
+	// DPRS, if set, returns the TNC2 APRS position packet to embed as DPRS in
+	// outgoing transmissions whose radio isn't sending GPS of its own, so
+	// reflector dashboards can show the station on a map. ok=false sends
+	// none. It is called from the TX goroutine about once a second while
+	// transmitting.
+	DPRS func() (tnc2 string, ok bool)
 }
 
 // Router routes DV frames between a radio and a reflector.
@@ -84,10 +109,23 @@ type Router struct {
 	slowDump    []byte
 	gotFixThisTX bool
 
-	// txText holds pre-scrambled slow data for a 20-char D-STAR text
-	// message injected into every outgoing superframe. This appears as
-	// the "User Message" on reflector status pages.
-	txText [dstar.MaxSeq + 1][3]byte
+	// RX transmission state, owned by rxLoop.
+	rxHeaderDelivered bool      // this transmission's header reached the radio
+	rxNoHeaderNoted   bool      // noteNoHeader already sent for this transmission
+	rxLastFrame       time.Time // when the last RX header or frame arrived
+
+	// TX slow-data state for the current transmission, owned by txLoop (see
+	// txSlowData).
+	txTextSent   [4]bool   // which of our text blocks have been sent
+	txGPS        gpsSource // whose GPS data this transmission carries
+	txDPRS       [][6]byte // our DPRS sentence being sent, as blocks
+	txDPRSIdx    int       // next block of txDPRS to send
+	txDPRSLogged bool
+	txPending    [3]byte // second half of the block we're sending
+	txPendingSeq uint8   // seq the second half belongs to; 0 = pass through
+
+	// txText holds the slow-data blocks of the 20-char D-STAR text message.
+	txText [4][6]byte
 }
 
 // New creates a Router.  Call Start to begin routing.
@@ -101,7 +139,7 @@ func New(r radio.RadioInterface, ref protocol.Reflector, cfg Config) *Router {
 		gps:       &aprs.Cache{},
 	}
 	if cfg.TXText != "" {
-		rt.txText = dstar.EncodeTextMessage(cfg.TXText)
+		rt.txText = dstar.TextMessageBlocks(cfg.TXText)
 		log.Printf("router: TX text message: %q", cfg.TXText)
 	}
 	return rt
@@ -210,6 +248,10 @@ func (rt *Router) txLoop() {
 			rt.dprsDec.Reset()
 			rt.slowDump = rt.slowDump[:0]
 			rt.gotFixThisTX = false
+			rt.txTextSent, rt.txGPS = [4]bool{}, gpsNone
+			rt.txDPRS, rt.txDPRSIdx, rt.txDPRSLogged = nil, 0, false
+			rt.txPendingSeq = 0
+			rt.txFrameCount = 0
 			rt.rewriteHeaderForReflector(&hdr)
 			if err := rt.reflector.SendHeader(hdr); err != nil {
 				rt.emit(Event{Direction: DirTX, Err: err})
@@ -256,11 +298,7 @@ func (rt *Router) txLoop() {
 			for _, sentence := range rt.dprsDec.Feed(frm.SlowData, frm.Seq) {
 				rt.handleDPRSSentence(sentence)
 			}
-			// Replace slow data with our text message so reflector
-			// dashboards and ircDDB show it as the "User Message".
-			if rt.cfg.TXText != "" {
-				frm.SlowData = rt.txText[frm.Seq%(dstar.MaxSeq+1)]
-			}
+			frm.SlowData = rt.txSlowData(frm)
 			if frm.End {
 				log.Printf("router: TX end-of-stream (seq=%d, total frames=%d)", frm.Seq, rt.txFrameCount)
 				// If nothing decoded, dump the whole descrambled slow-data
@@ -305,6 +343,108 @@ func printableASCII(b []byte) string {
 	return string(out)
 }
 
+// gpsSource records whose GPS data a transmission carries, so the radio's
+// and our DPRS sentences are never interleaved (receivers concatenate GPS
+// blocks into one sentence).
+type gpsSource int
+
+const (
+	gpsNone  gpsSource = iota
+	gpsRadio           // the radio's own GPS passes through
+	gpsOurs            // we embed the position from Config.DPRS
+)
+
+// txSlowData picks the slow data forwarded to the reflector for one TX frame,
+// working in 6-byte blocks (an odd/even frame pair), the way radios mix their
+// TX message and GPS:
+//
+//   - the radio's text-message blocks are replaced by ours, block for block;
+//   - the radio's GPS blocks pass through unchanged, from the first frame;
+//   - idle blocks carry our text message (if not yet sent this transmission),
+//     then our DPRS position when the radio isn't sending GPS of its own;
+//   - anything else passes through.
+func (rt *Router) txSlowData(frm dstar.DVFrame) [3]byte {
+	seq := frm.Seq % (dstar.MaxSeq + 1)
+	if seq == 0 {
+		return frm.SlowData // sync
+	}
+	if seq%2 == 0 {
+		if rt.txPendingSeq == seq {
+			rt.txPendingSeq = 0
+			return dstar.ScrambleSlowData(rt.txPending, seq)
+		}
+		return frm.SlowData
+	}
+	radioType := dstar.ScrambleSlowData(frm.SlowData, seq)[0]
+	block, replace := rt.txBlock(radioType)
+	if !replace {
+		rt.txPendingSeq = 0
+		return frm.SlowData
+	}
+	copy(rt.txPending[:], block[3:])
+	rt.txPendingSeq = seq + 1
+	return dstar.ScrambleSlowData([3]byte{block[0], block[1], block[2]}, seq)
+}
+
+// txBlock decides what replaces the radio's slow-data block of the given
+// type (its first, unscrambled byte). replace=false passes the radio's block.
+func (rt *Router) txBlock(radioType byte) (block [6]byte, replace bool) {
+	switch radioType & 0xF0 {
+	case dstar.BlockTypeMessage:
+		if rt.cfg.TXText == "" {
+			return block, false
+		}
+		n := radioType & 0x03
+		rt.txTextSent[n] = true
+		return rt.txText[n], true
+	case dstar.BlockTypeGPS:
+		if rt.txGPS == gpsOurs {
+			return dstar.FillerBlock, true // ours is in progress
+		}
+		rt.txGPS = gpsRadio
+		return block, false
+	case dstar.BlockTypeFiller, 0x00:
+		if rt.cfg.TXText != "" {
+			for n, sent := range rt.txTextSent {
+				if !sent {
+					rt.txTextSent[n] = true
+					return rt.txText[n], true
+				}
+			}
+		}
+		if rt.txGPS != gpsRadio {
+			if b, ok := rt.nextDPRSBlock(); ok {
+				rt.txGPS = gpsOurs
+				return b, true
+			}
+		}
+	}
+	return block, false
+}
+
+// nextDPRSBlock returns the next block of our DPRS position sentence,
+// starting a fresh sentence (with the current position) after the last one.
+func (rt *Router) nextDPRSBlock() ([6]byte, bool) {
+	if rt.txDPRSIdx >= len(rt.txDPRS) {
+		rt.txDPRS, rt.txDPRSIdx = nil, 0
+		if rt.cfg.DPRS == nil {
+			return [6]byte{}, false
+		}
+		tnc2, ok := rt.cfg.DPRS()
+		if !ok {
+			return [6]byte{}, false
+		}
+		rt.txDPRS = dstar.DPRSBlocks(aprs.WrapDPRS(tnc2))
+		if !rt.txDPRSLogged {
+			rt.txDPRSLogged = true
+			log.Printf("router: embedding DPRS position in TX: %s", tnc2)
+		}
+	}
+	b := rt.txDPRS[rt.txDPRSIdx]
+	rt.txDPRSIdx++
+	return b, true
+}
+
 // handleDPRSSentence validates a slow-data DPRS sentence, parses the
 // embedded position if possible, and updates the GPS cache.
 func (rt *Router) handleDPRSSentence(sentence string) {
@@ -339,26 +479,65 @@ func (rt *Router) rxLoop() {
 			}
 			log.Printf("router: RX header from reflector: MYCALL=%q URCALL=%q RPT1=%q RPT2=%q",
 				hdr.MyCall, hdr.YourCall, hdr.RPT1, hdr.RPT2)
-			if rt.radio.IsOpen() {
-				if err := rt.radio.SendHeader(hdr); err != nil {
-					rt.emit(Event{Direction: DirRX, Err: err})
-				}
-			}
+			delivered := rt.deliverRX(func() error { return rt.radio.SendHeader(hdr) })
+			rt.rxHeaderDelivered = delivered
+			rt.rxNoHeaderNoted = false
+			rt.rxLastFrame = time.Now()
 			h := hdr
-			rt.emit(Event{Direction: DirRX, Header: &h})
+			rt.emit(Event{Direction: DirRX, Header: &h, Delivered: delivered})
 
 		case frm, ok := <-rt.reflector.RxFrames():
 			if !ok {
 				return
 			}
-			if rt.radio.IsOpen() {
-				if err := rt.radio.SendFrame(frm); err != nil {
-					rt.emit(Event{Direction: DirRX, Err: err})
-				}
+			if time.Since(rt.rxLastFrame) > rxStreamGap {
+				// A new transmission whose header never arrived.
+				rt.rxHeaderDelivered = false
+				rt.rxNoHeaderNoted = false
 			}
+			rt.rxLastFrame = time.Now()
+
+			sent := rt.deliverRX(func() error { return rt.radio.SendFrame(frm) })
 			f := frm
-			rt.emit(Event{Direction: DirRX, Frame: &f})
+			evt := Event{Direction: DirRX, Frame: &f, Delivered: sent && rt.rxHeaderDelivered}
+			if sent && !rt.rxHeaderDelivered && !rt.rxNoHeaderNoted {
+				rt.rxNoHeaderNoted = true
+				log.Printf("router: RX voice reaching radio without a delivered header")
+				evt.Note = noteNoHeader
+			}
+			if frm.End {
+				rt.rxHeaderDelivered = false
+				rt.rxNoHeaderNoted = false
+			}
+			if evt.Note != "" {
+				rt.emitWait(evt) // don't let a full queue drop the note
+			} else {
+				rt.emit(evt)
+			}
 		}
+	}
+}
+
+// deliverRX sends to the radio if it is open, reporting whether the write
+// happened. A temporarily unusable link (radio.ErrLinkDown) isn't an error:
+// the radio reports its own link state.
+func (rt *Router) deliverRX(send func() error) bool {
+	if !rt.radio.IsOpen() {
+		return false
+	}
+	err := send()
+	if err != nil && !errors.Is(err, radio.ErrLinkDown) {
+		rt.emit(Event{Direction: DirRX, Err: err})
+	}
+	return err == nil
+}
+
+// emitWait is emit for events that must not be dropped; it blocks until the
+// UI takes the event or the router stops.
+func (rt *Router) emitWait(e Event) {
+	select {
+	case <-rt.stopCh:
+	case rt.eventCh <- e:
 	}
 }
 
