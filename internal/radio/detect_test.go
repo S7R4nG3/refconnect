@@ -110,7 +110,9 @@ func TestClassifyBluetooth(t *testing.T) {
 	}{
 		{"TH-D75", "Kenwood TH-D75", ProtocolMMDVM, "Kenwood TH-D75 · Bluetooth (rfcomm0)"},
 		{"th-d75 shack", "Kenwood TH-D75", ProtocolMMDVM, "Kenwood TH-D75 · Bluetooth (rfcomm0)"},
-		{"ID-52PLUS", "Icom ID-52", ProtocolDVGateway, "Icom ID-52 · Bluetooth (rfcomm0)"},
+		// Icom radios can't run terminal mode over Bluetooth.
+		{"IC-705", "", "", "IC-705 · Bluetooth (rfcomm0)"},
+		{"ID-52PLUS", "", "", "ID-52PLUS · Bluetooth (rfcomm0)"},
 		{"Pixel 7", "", "", "Pixel 7 · Bluetooth (rfcomm0)"},
 		{"", "", "", "Bluetooth device AA:BB:CC:DD:EE:FF (rfcomm0)"},
 	}

@@ -181,12 +181,11 @@ type btDevice struct {
 }
 
 // bluetoothModels maps a substring of a Bluetooth device name to the radio.
-// Only radios whose Bluetooth link carries their terminal-mode protocol.
+// Only radios whose Bluetooth link carries their terminal-mode protocol: the
+// IC-705, ID-52 and ID-50 run DV Gateway Terminal mode over USB only, and the
+// ID-52 PLUS is only documented with Icom's own apps over Bluetooth.
 var bluetoothModels = []knownRadio{
 	{vid: "TH-D75", model: "Kenwood TH-D75", protocol: ProtocolMMDVM},
-	{vid: "IC-705", model: "Icom IC-705", protocol: ProtocolDVGateway},
-	{vid: "ID-52", model: "Icom ID-52", protocol: ProtocolDVGateway},
-	{vid: "ID-50", model: "Icom ID-50", protocol: ProtocolDVGateway},
 }
 
 // classifyBluetooth identifies a radio from its Bluetooth device name.
