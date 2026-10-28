@@ -4,9 +4,9 @@ go 1.26.0
 
 require (
 	fyne.io/fyne/v2 v2.8.2
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.4
 	go.bug.st/serial v1.8.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
