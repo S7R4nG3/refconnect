@@ -10,7 +10,7 @@ pkgdesc="D-STAR reflector client (REF/XRF/XLX/DCS)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/S7R4nG3/refconnect"
 license=('MIT')
-depends=('libgl' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libxxf86vm' 'wayland' 'libxkbcommon')
+depends=('libgl' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libxxf86vm' 'wayland' 'libxkbcommon' 'hicolor-icon-theme')
 provides=('refconnect')
 conflicts=('refconnect' 'refconnect-git')
 # Update the sha256sums below on every release: `makepkg -g >> PKGBUILD`.
