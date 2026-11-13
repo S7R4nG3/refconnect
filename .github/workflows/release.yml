@@ -360,10 +360,11 @@ jobs:
         run: |
           V="${GITHUB_REF_NAME#v}"
           for _ in $(seq 60); do
-            PRIMARY="$(curl -fsS "${SITE}/rpm/repodata/repomd.xml" | grep -o 'repodata/[^"]*-primary.xml.gz' || true)"
+            PRIMARY="$(curl -fsS "${SITE}/rpm/repodata/repomd.xml" | grep -o 'repodata/[^"]*-primary\.xml\.[a-z]*' || true)"
+            case "${PRIMARY}" in *.zst) UNZIP=zstd ;; *) UNZIP=gzip ;; esac
             if curl -fsS "${SITE}/apt/dists/stable/main/binary-${{ matrix.arch }}/Packages" | grep -qx "Version: ${V}-1" \
                && [ -n "${PRIMARY}" ] \
-               && curl -fsS "${SITE}/rpm/${PRIMARY}" | gunzip | grep -q "ver=\"${V}\""; then
+               && curl -fsS "${SITE}/rpm/${PRIMARY}" | "${UNZIP}" -dc | grep -q "ver=\"${V}\""; then
               echo "repo serves ${V}"; exit 0
             fi
             sleep 15

@@ -53,7 +53,9 @@ cd - >/dev/null
 
 # --- DNF ---------------------------------------------------------------------
 cp "${PKGS}"/*.rpm "${OUT}/rpm/"
-createrepo_c --quiet "${OUT}/rpm"
+# Newer createrepo_c (Ubuntu 26+) defaults to zstd, which older dnf (EL8)
+# can't read; pin gzip so the output doesn't depend on the runner image.
+createrepo_c --quiet --general-compress-type=gz "${OUT}/rpm"
 gpg_sign --armor --detach-sign -o "${OUT}/rpm/repodata/repomd.xml.asc" "${OUT}/rpm/repodata/repomd.xml"
 cat > "${OUT}/rpm/refconnect.repo" <<EOF
 [refconnect]
