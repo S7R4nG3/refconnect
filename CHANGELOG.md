@@ -1,3 +1,54 @@
+## v0.15.0 (2026-11-13)
+
+### Feat
+
+- **packaging**: signed APT and DNF repositories on GitHub Pages
+- real sha256sums for -bin, add .SRCINFO for AUR submit
+- add .deb, .rpm, AppImage and AUR packaging
+
+### Fix
+
+- **packaging**: valid release workflow, glibc floor, consistent versions
+
+## v0.14.0 (2026-10-26)
+
+### Feat
+
+- **ui**: choose the protocol for ports that aren't a recognised radio
+- **aprs**: send position to the reflector inside voice transmissions
+- **ui**: lock radio selection while connected to a reflector
+- **ui**: RX indicator shows voice actually delivered to the radio
+- **radio**: identify Bluetooth radios on Linux rfcomm ports
+- **radio**: auto-detect radio serial ports and select the DV data port
+
+### Fix
+
+- **ui**: give ID-52 users the documented Terminal mode settings
+- **radio**: don't treat the IC-9700's USB port as a DV Gateway port
+- **ui**: point IC-705 users at the real DV Gateway settings
+- **radio**: only identify the TH-D75 as a Bluetooth radio
+- **router**: mix text and GPS block by block so the GPS pin survives
+- **router**: stop the radio's own TX message garbling the User Message
+- **ui**: make RX/TX activity indicators actually appear
+- **protocol**: accept reflector headers with a wrong CRC
+- **ui**: light RX indicator for any audio received from the reflector
+- **radio**: don't send reflector audio to the radio mid-reconnect
+- **ui**: don't report a busy port as a radio that isn't answering
+- **radio**: recover the MMDVM link after Bluetooth/USB disconnects
+
+## v0.13.1 (2026-10-23)
+
+### Fix
+
+- **protocol**: accept zeroed header CRC from xlxd reflectors
+
+## v0.13.0 (2026-10-23)
+
+### Feat
+
+- **update**: check for new releases on launch and auto-install via setup script
+- **ui**: add link to Connecting Radios wiki page below port selector
+
 ## v0.12.0 (2026-10-17)
 
 ### Feat
