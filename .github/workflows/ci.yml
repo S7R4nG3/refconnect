@@ -40,3 +40,92 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  linux-packages:
+    name: Linux packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libgl1-mesa-dev xorg-dev \
+            libwayland-dev libxkbcommon-dev wayland-protocols \
+            apt-utils createrepo-c
+
+      - name: Build
+        run: go build -ldflags="-s -w" -o refconnect .
+
+      # Same nFPM + build-repos.sh path as release.yml, signed with a
+      # throwaway key instead of PKG_SIGNING_KEY.
+      - name: Build test repo
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          chmod +x packaging/scripts/*.sh
+          ARCH=${{ matrix.arch }} NFPM="$(go env GOPATH)/bin/nfpm" sh packaging/build-test-repo.sh test-repo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-repo-${{ matrix.arch }}
+          path: test-repo
+          retention-days: 3
+
+  install-test:
+    name: Install (${{ matrix.image }}, ${{ matrix.arch }}, ${{ matrix.mode }})
+    needs: linux-packages
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:13', 'fedora:latest']
+        arch: [amd64, arm64]
+        mode: [fresh]
+        include:
+          - { image: 'ubuntu:24.04', arch: amd64, mode: upgrade }
+          - { image: 'fedora:latest', arch: amd64, mode: upgrade }
+          # Below the glibc floor: apt must refuse rather than install a
+          # binary that cannot run.
+          - { image: 'ubuntu:22.04', arch: amd64, mode: refuse }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-repo-${{ matrix.arch }}
+          path: test-repo
+
+      - name: Serve test repo
+        run: |
+          python3 -m http.server 8080 -d test-repo/site >/dev/null 2>&1 &
+          for _ in $(seq 10); do curl -fsS -o /dev/null http://localhost:8080/refconnect.asc && exit 0; sleep 1; done
+          exit 1
+
+      - name: Install in ${{ matrix.image }}
+        run: |
+          VERSION="$(ls test-repo/new/*.deb | sed 's/.*refconnect_\(.*\)-1_.*/\1/')"
+          case "${{ matrix.mode }}" in
+            upgrade)
+              case "${{ matrix.image }}" in
+                fedora*) OLD="$(ls test-repo/old/*.rpm)" ;;
+                *) OLD="$(ls test-repo/old/*.deb)" ;;
+              esac ;;
+            *) OLD="" ;;
+          esac
+          EXPECT=install
+          [ "${{ matrix.mode }}" = refuse ] && EXPECT=refuse
+          docker run --rm --network host -e EXPECT="${EXPECT}" \
+            -v "$PWD/packaging/test-install.sh:/test-install.sh:ro" \
+            -v "$PWD/test-repo:/test-repo:ro" \
+            "${{ matrix.image }}" sh /test-install.sh http://localhost:8080 "${VERSION}" ${OLD:+"/${OLD}"}

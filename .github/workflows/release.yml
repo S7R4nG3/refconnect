@@ -332,3 +332,68 @@ jobs:
 
       - id: deploy
         uses: actions/deploy-pages@v5
+
+  verify-repos:
+    name: Verify install (${{ matrix.image }}, ${{ matrix.arch }}, ${{ matrix.mode }})
+    needs: publish-repos
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:13', 'fedora:latest']
+        arch: [amd64, arm64]
+        mode: [fresh]
+        include:
+          # Upgrade from the previous release's package, as an existing user would.
+          - { image: 'ubuntu:24.04', arch: amd64, mode: upgrade }
+          - { image: 'fedora:latest', arch: amd64, mode: upgrade }
+    env:
+      SITE: https://s7r4ng3.github.io/refconnect
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pages can serve the previous deploy for a few minutes.
+      - name: Wait for the new repo to be live
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          for _ in $(seq 60); do
+            PRIMARY="$(curl -fsS "${SITE}/rpm/repodata/repomd.xml" | grep -o 'repodata/[^"]*-primary.xml.gz' || true)"
+            if curl -fsS "${SITE}/apt/dists/stable/main/binary-${{ matrix.arch }}/Packages" | grep -qx "Version: ${V}-1" \
+               && [ -n "${PRIMARY}" ] \
+               && curl -fsS "${SITE}/rpm/${PRIMARY}" | gunzip | grep -q "ver=\"${V}\""; then
+              echo "repo serves ${V}"; exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::${SITE} still does not serve ${V} after 15 minutes"; exit 1
+
+      - name: Fetch previous release package
+        if: matrix.mode == 'upgrade'
+        id: old
+        run: |
+          PREV="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq \
+            "[.[] | select(.draft|not) | select(.prerelease|not) | select(.tag_name != \"${GITHUB_REF_NAME}\")][0].tag_name")"
+          case "${{ matrix.image }}" in
+            fedora*) PAT="refconnect-*.x86_64.rpm" ;;
+            *) PAT="refconnect_*_amd64.deb" ;;
+          esac
+          mkdir old
+          if [ -n "${PREV}" ] && gh release download "${PREV}" -p "${PAT}" -D old 2>/dev/null; then
+            echo "path=$(ls old/*)" >> "${GITHUB_OUTPUT}"
+            echo "upgrading from ${PREV}"
+          else
+            echo "::notice::${PREV:-no previous release} has no ${PAT}; skipping the upgrade test"
+          fi
+
+      - name: Install in ${{ matrix.image }}
+        if: matrix.mode == 'fresh' || steps.old.outputs.path != ''
+        run: |
+          OLD="${{ steps.old.outputs.path }}"
+          mkdir -p old
+          docker run --rm \
+            -v "$PWD/packaging/test-install.sh:/test-install.sh:ro" \
+            -v "$PWD/old:/old:ro" \
+            "${{ matrix.image }}" sh /test-install.sh "${SITE}" "${GITHUB_REF_NAME#v}" ${OLD:+"/${OLD}"}

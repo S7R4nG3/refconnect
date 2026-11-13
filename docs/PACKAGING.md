@@ -82,6 +82,34 @@ One-time setup:
 4. Settings → Environments → `github-pages`: allow tags matching `v*` to deploy
    (by default only the default branch can).
 
+### Install tests
+
+`packaging/test-install.sh <site-url> <version> [<old-package>]` runs as root
+in a fresh distro container. As an unprivileged sudo user it follows the
+README steps (or installs `<old-package>` first and then runs `apt upgrade` /
+`dnf upgrade`). It then checks the installed version and files, checks that
+`ldd` resolves every library (i.e. the package dependencies are complete),
+and checks that refconnect stays up under Xvfb.
+
+* **Every PR** (`ci.yml`): `packaging/build-test-repo.sh` builds packages and a
+  repo signed with a throwaway key. The repo is served on `localhost`, and the
+  install is tested on Ubuntu 24.04, Debian 13 and Fedora (latest), amd64 and
+  arm64, plus an upgrade from an older version on amd64. On Ubuntu 22.04 the
+  test expects the install to be **refused**, because glibc is below the floor.
+* **Every release** (`release.yml`, `verify-repos`): the same checks against
+  the live Pages repo once it serves the new version. The upgrade runs start
+  from the previous release's `.deb`/`.rpm`. They are skipped if that release
+  has no packages.
+
+Run locally (Docker), after building `./refconnect` on Ubuntu 24.04:
+
+```sh
+ARCH=arm64 sh packaging/build-test-repo.sh /tmp/t     # needs nfpm, apt-utils, createrepo-c
+docker run -d --name reposrv -v /tmp/t/site:/site:ro python:3-alpine python -m http.server 8080 -d /site
+docker run --rm --network container:reposrv -v "$PWD/packaging/test-install.sh:/t.sh:ro" \
+  fedora:latest sh /t.sh http://localhost:8080 0.14.0
+```
+
 ## AUR
 
 Two AUR packages, maintained in separate AUR repos (not in this repo):
