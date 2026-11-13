@@ -32,10 +32,37 @@ jobs:
           cp configs/refconnect.desktop refconnect.desktop
           tar -czf refconnect_linux_amd64.tar.gz refconnect refconnect.png refconnect.desktop
 
+      - name: Build .deb / .rpm (nFPM)
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          chmod +x packaging/scripts/*.sh
+          GLIBC_MIN="$(sh packaging/glibc-min.sh refconnect)"
+          export GLIBC_MIN
+          echo "glibc floor: ${GLIBC_MIN}"
+          VERSION="${GITHUB_REF_NAME#v}" ARCH=amd64 $(go env GOPATH)/bin/nfpm package --packager deb --config packaging/nfpm.yaml --target .
+          VERSION="${GITHUB_REF_NAME#v}" ARCH=amd64 $(go env GOPATH)/bin/nfpm package --packager rpm --config packaging/nfpm.yaml --target .
+          ls -l refconnect*.deb refconnect*.rpm
+
+      - name: Build AppImage
+        env:
+          ARCH: x86_64
+          APPIMAGETOOL_VERSION: "1.9.1"
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+        run: |
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract >/dev/null
+          VERSION="${GITHUB_REF_NAME#v}" APPIMAGETOOL="$PWD/squashfs-root/AppRun" bash packaging/build-appimage.sh .
+
       - uses: actions/upload-artifact@v4
         with:
           name: refconnect_linux_amd64
-          path: refconnect_linux_amd64.tar.gz
+          path: |
+            refconnect_linux_amd64.tar.gz
+            refconnect*.deb
+            refconnect*.rpm
+            refconnect*.AppImage
 
   build-linux-arm64:
     name: Build Linux (arm64)
@@ -63,10 +90,37 @@ jobs:
           cp configs/refconnect.desktop refconnect.desktop
           tar -czf refconnect_linux_arm64.tar.gz refconnect refconnect.png refconnect.desktop
 
+      - name: Build .deb / .rpm (nFPM)
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          chmod +x packaging/scripts/*.sh
+          GLIBC_MIN="$(sh packaging/glibc-min.sh refconnect)"
+          export GLIBC_MIN
+          echo "glibc floor: ${GLIBC_MIN}"
+          VERSION="${GITHUB_REF_NAME#v}" ARCH=arm64 $(go env GOPATH)/bin/nfpm package --packager deb --config packaging/nfpm.yaml --target .
+          VERSION="${GITHUB_REF_NAME#v}" ARCH=arm64 $(go env GOPATH)/bin/nfpm package --packager rpm --config packaging/nfpm.yaml --target .
+          ls -l refconnect*.deb refconnect*.rpm
+
+      - name: Build AppImage
+        env:
+          ARCH: aarch64
+          APPIMAGETOOL_VERSION: "1.9.1"
+          APPIMAGETOOL_SHA256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+        run: |
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-aarch64.AppImage
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
+          chmod +x appimagetool
+          ./appimagetool --appimage-extract >/dev/null
+          VERSION="${GITHUB_REF_NAME#v}" APPIMAGETOOL="$PWD/squashfs-root/AppRun" bash packaging/build-appimage.sh .
+
       - uses: actions/upload-artifact@v4
         with:
           name: refconnect_linux_arm64
-          path: refconnect_linux_arm64.tar.gz
+          path: |
+            refconnect_linux_arm64.tar.gz
+            refconnect*.deb
+            refconnect*.rpm
+            refconnect*.AppImage
 
   build-macos:
     name: Build macOS (arm64)

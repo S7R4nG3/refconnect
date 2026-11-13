@@ -14,7 +14,7 @@ else
   LDFLAGS = -ldflags="-extldflags=-Wl,-no_warn_duplicate_libraries"
 endif
 
-.PHONY: run build build-windows bundle icons-windows install-linux clean
+.PHONY: run build build-windows bundle icons-windows install-linux deb rpm appimage clean
 
 linux-packages:
 	sudo apt install -y libxi-dev libxinerama-dev libxrandr-dev libxcursor-dev libxxf86vm-dev
@@ -64,10 +64,29 @@ bundle: build
 run: bundle
 	@open $(APP)
 
+# Linux system packages. VERSION defaults to version.json without the leading
+# "v"; ARCH defaults to the Go arch (amd64/arm64). Requires nFPM v2.48.0:
+#   go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+VERSION ?= $(shell python3 -c 'import json;print(json.load(open("version.json"))["version"].lstrip("v"))')
+GOARCH  ?= $(shell go env GOARCH)
+GOBIN   ?= $(shell go env GOPATH)/bin
+NFPM    ?= $(GOBIN)/nfpm
+deb: build
+	@chmod +x packaging/scripts/*.sh
+	@GLIBC_MIN=$$(sh packaging/glibc-min.sh $(BINARY)) VERSION=$(VERSION) ARCH=$(GOARCH) $(NFPM) package --packager deb --config packaging/nfpm.yaml --target .
+
+rpm: build
+	@chmod +x packaging/scripts/*.sh
+	@GLIBC_MIN=$$(sh packaging/glibc-min.sh $(BINARY)) VERSION=$(VERSION) ARCH=$(GOARCH) $(NFPM) package --packager rpm --config packaging/nfpm.yaml --target .
+
+appimage:
+	@VERSION=$(VERSION) bash packaging/build-appimage.sh .
+
 clean:
 	@rm -f $(BINARY) $(EXE)
 	@rm -f rsrc_windows_amd64.syso
 	@rm -rf $(APP)
+	@rm -f refconnect*.deb refconnect*.rpm refconnect*.AppImage
 
 test: build
 	@rm -f ./refconnect.log

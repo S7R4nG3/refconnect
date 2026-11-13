@@ -28,6 +28,21 @@ func (a *App) checkForUpdate() {
 	}
 	a.appendLog(fmt.Sprintf("Update available: %s (running %s)", latest, a.version))
 
+	if update.ManagedInstall() {
+		a.appendLog("Managed install detected — update via fresh download.")
+		msg := fmt.Sprintf("RefConnect %s is available (you have %s).\n\n"+
+			"You installed via a system package (.deb/.rpm/AUR) or AppImage, so the in-app updater is disabled.\n"+
+			"Download the new release from GitHub and install it:\n"+
+			"  Debian/Ubuntu: download refconnect*.deb, then sudo apt install ./refconnect*.deb\n"+
+			"  Fedora/RHEL: download refconnect*.rpm, then sudo dnf install ./refconnect*.rpm\n"+
+			"  Arch (AUR): update the refconnect-bin or refconnect-git package with your AUR helper.\n"+
+			"  AppImage: download the new file from GitHub Releases and make it executable.",
+			latest, a.version)
+		fyne.Do(func() {
+			dialog.ShowInformation("Update Available", msg, a.win)
+		})
+		return
+	}
 	fyne.Do(func() {
 		msg := fmt.Sprintf("RefConnect %s is available (you have %s).\n\n"+
 			"Update now? RefConnect will restart when the update is installed.", latest, a.version)

@@ -1,0 +1,60 @@
+# nFPM config: builds .deb and .rpm from the same definition.
+# Usage:
+#   VERSION=0.14.0 GOARCH=amd64 make deb
+#   VERSION=0.14.0 GOARCH=arm64 make rpm
+# Requires VERSION, ARCH and GLIBC_MIN (from packaging/glibc-min.sh) in the env.
+# CI: .github/workflows/release.yml installs nfpm and calls it directly.
+# nFPM docs: https://nfpm.goreleaser.com/configuration/
+name: refconnect
+arch: "${ARCH}"
+version: "${VERSION}"
+release: "1"
+section: comm
+priority: optional
+maintainer: Dave Streng (KR4GCQ)
+description: |-
+  D-STAR reflector client for macOS, Windows, and Linux.
+  Connects a D-STAR radio to REF/XRF/XLX/DCS reflectors via serial port.
+vendor: S7R4nG3
+homepage: https://github.com/S7R4nG3/refconnect
+license: MIT
+depends:
+  - libc6 (>= ${GLIBC_MIN})
+  - libgl1
+  - libx11-6
+  - libxcursor1
+  - libxrandr2
+  - libxi6
+  - libxxf86vm1
+  - libwayland-client0
+  - libxkbcommon0
+recommends:
+  - xdg-utils
+contents:
+  - src: ./refconnect
+    dst: /usr/bin/refconnect
+    file_info:
+      mode: 0755
+  - src: ./configs/refconnect.desktop
+    dst: /usr/share/applications/refconnect.desktop
+  - src: ./docs/antenna.png
+    dst: /usr/share/icons/hicolor/32x32/apps/refconnect.png
+  - src: ./LICENSE
+    dst: /usr/share/doc/refconnect/copyright
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  postremove: ./packaging/scripts/postremove.sh
+overrides:
+  # Dependency names below are Fedora/RHEL specific (openSUSE uses
+  # different names, e.g. Mesa-libGL1, so the .rpm targets Fedora/RHEL).
+  rpm:
+    depends:
+      - glibc >= ${GLIBC_MIN}
+      - mesa-libGL
+      - libX11
+      - libXcursor
+      - libXrandr
+      - libXi
+      - libXxf86vm
+      - wayland
+      - libxkbcommon

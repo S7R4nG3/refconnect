@@ -32,6 +32,16 @@ Windows:
 iwr -useb https://raw.githubusercontent.com/S7R4nG3/refconnect/main/configs/setup.ps1 | iex
 ```
 
+Linux native packages (from [Releases](https://github.com/S7R4nG3/refconnect/releases)):
+
+```shell
+sudo apt install ./refconnect*.deb      # Debian/Ubuntu (amd64/arm64)
+sudo dnf install ./refconnect*.rpm      # Fedora/RHEL (x86_64/aarch64)
+chmod +x refconnect*.AppImage && ./refconnect*.AppImage
+```
+
+Linux builds need glibc 2.38+ (Debian 13+, Ubuntu 24.04+, Fedora 39+). Portable tarball fallback (`setup.sh` above) still works. See [docs/PACKAGING.md](docs/PACKAGING.md) for details.
+
 Check out the [Wiki](https://github.com/S7R4nG3/refconnect/wiki) for more information!
 
 
