@@ -36,6 +36,9 @@ Files installed: `/usr/bin/refconnect`, `/usr/share/applications/refconnect.desk
 
 * `build-linux (amd64)`: `tar.gz` + `.deb` + `.rpm` + `.AppImage`
 * `build-linux-arm64`: `tar.gz` + `.deb` + `.rpm` + `.AppImage`
+* `publish-repos`: after the release is created, rebuilds the APT and DNF
+  repositories from that release's `.deb`/`.rpm` files and deploys them to
+  GitHub Pages (https://s7r4ng3.github.io/refconnect/).
 * macOS / Windows unchanged.
 
 All Linux artifacts take their version from the tag (`VERSION=${GITHUB_REF_NAME#v}`).
@@ -43,6 +46,41 @@ The binaries are built on Ubuntu 24.04 runners; as of v0.14.0 they need glibc
 2.38 or newer (Debian 13+, Ubuntu 24.04+, Fedora 39+). The CI log prints the
 computed floor for each build. The tarball and AppImage have the same floor;
 the AppImage does not bundle glibc or the GL/X11 libraries.
+
+## APT / DNF repositories (GitHub Pages)
+
+`packaging/build-repos.sh <package-dir> <output-dir>` builds the site with
+Ubuntu's own tools (`apt-ftparchive`, `createrepo_c`, `gpg`); no third-party
+action sees the signing key.
+
+```
+index.html, refconnect.asc, refconnect.gpg     # install page, armored key, binary keyring
+apt/dists/stable/{InRelease,Release,Release.gpg,main/binary-{amd64,arm64}/Packages*}
+apt/pool/main/r/refconnect/*.deb
+rpm/{*.rpm,repodata/repomd.xml(.asc),refconnect.repo}
+```
+
+Each deploy replaces the whole site, so the repos only carry the latest
+release (enough for `apt upgrade` / `dnf upgrade`).
+
+Signing: APT verifies the signed `InRelease`/`Release.gpg`; DNF verifies the
+signed `repomd.xml` (`repo_gpgcheck=1`) and the rpm signatures (`gpgcheck=1`),
+which nFPM adds at build time when `RPM_SIGNING_KEY_FILE` is set.
+
+One-time setup:
+
+1. Create a signing key (no expiry or a long one; users pin it):
+   ```sh
+   gpg --batch --quick-gen-key "RefConnect Packages <s7r4ng3@gmail.com>" rsa4096 sign never
+   gpg --armor --export-secret-keys "RefConnect Packages" > pkg-signing.asc
+   ```
+   Add a passphrase with `--passphrase` if you want one.
+2. Add repository secrets `PKG_SIGNING_KEY` (contents of `pkg-signing.asc`) and,
+   if the key has one, `PKG_SIGNING_KEY_PASSPHRASE`. Keep an offline backup of
+   the key; losing it means every user has to re-import a new one.
+3. Settings → Pages → Build and deployment → Source: **GitHub Actions**.
+4. Settings → Environments → `github-pages`: allow tags matching `v*` to deploy
+   (by default only the default branch can).
 
 ## AUR
 
@@ -73,5 +111,5 @@ Install: `yay -S refconnect-git` or `yay -S refconnect-bin` (once published to t
 ownership probes. `/usr/local/bin` and `/opt` are treated as manual
 `setup.sh` installs, so the in-app updater still works there. On managed
 installs `Install()` refuses and the UI (`internal/ui/updater.go`) tells the
-user to download the new `.deb`/`.rpm`/AppImage from GitHub Releases
-(there is no APT/DNF repository yet, so `apt`/`dnf upgrade` will not find it).
+user to run `apt upgrade` / `dnf upgrade` (pointing hand-installed package users
+at the repository page) or download a fresh AppImage.

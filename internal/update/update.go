@@ -88,10 +88,9 @@ func parseVersion(v string) [3]int {
 // installed by a system package manager (dpkg, rpm, pacman), runs from an
 // AppImage, or runs from a read-only system location such as /usr/bin.
 // Self-updating from inside the app would fight the package manager, so
-// callers should redirect the user to a fresh download (or the AppImage
-// download page) instead of Install(). There is no APT/DNF repository yet,
-// so a .deb/.rpm installed from a file cannot be updated with apt/dnf
-// upgrade — the user must download the new package from GitHub Releases.
+// callers should point the user at their package manager (the APT/DNF
+// repositories at https://s7r4ng3.github.io/refconnect/) or, for an AppImage,
+// a fresh download instead of Install().
 func ManagedInstall() bool {
 	// Inside an AppImage the executable resolves to a read-only
 	// /tmp/.mount_XXXX path that no package database owns.
@@ -142,7 +141,7 @@ func ManagedInstall() bool {
 // It refuses to run on ManagedInstall() systems — use the package manager.
 func Install(ctx context.Context, logf func(string, ...any)) (string, error) {
 	if ManagedInstall() {
-		return "", fmt.Errorf("installed by a system package or AppImage — download the new release from GitHub instead")
+		return "", fmt.Errorf("installed by a system package or AppImage — update with the package manager or a fresh AppImage instead")
 	}
 	exe, err := os.Executable()
 	if err != nil {
