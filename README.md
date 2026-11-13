@@ -32,13 +32,21 @@ Windows:
 iwr -useb https://raw.githubusercontent.com/S7R4nG3/refconnect/main/configs/setup.ps1 | iex
 ```
 
-Linux native packages (from [Releases](https://github.com/S7R4nG3/refconnect/releases)):
+Linux package repositories (amd64/arm64, updates via `apt upgrade` / `dnf upgrade`):
 
 ```shell
-sudo apt install ./refconnect*.deb      # Debian/Ubuntu (amd64/arm64)
-sudo dnf install ./refconnect*.rpm      # Fedora/RHEL (x86_64/aarch64)
-chmod +x refconnect*.AppImage && ./refconnect*.AppImage
+# Debian/Ubuntu
+sudo curl -fsSLo /usr/share/keyrings/refconnect.gpg https://s7r4ng3.github.io/refconnect/refconnect.gpg
+echo "deb [signed-by=/usr/share/keyrings/refconnect.gpg] https://s7r4ng3.github.io/refconnect/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/refconnect.list
+sudo apt update && sudo apt install refconnect
+
+# Fedora/RHEL
+sudo curl -fsSLo /etc/yum.repos.d/refconnect.repo https://s7r4ng3.github.io/refconnect/rpm/refconnect.repo
+sudo dnf install refconnect
 ```
+
+The `.deb`, `.rpm` and `.AppImage` files are also attached to each [release](https://github.com/S7R4nG3/refconnect/releases).
 
 Linux builds need glibc 2.38+ (Debian 13+, Ubuntu 24.04+, Fedora 39+). Portable tarball fallback (`setup.sh` above) still works. See [docs/PACKAGING.md](docs/PACKAGING.md) for details.
 

@@ -33,12 +33,22 @@ jobs:
           tar -czf refconnect_linux_amd64.tar.gz refconnect refconnect.png refconnect.desktop
 
       - name: Build .deb / .rpm (nFPM)
+        env:
+          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+          NFPM_RPM_PASSPHRASE: ${{ secrets.PKG_SIGNING_KEY_PASSPHRASE }}
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
           chmod +x packaging/scripts/*.sh
           GLIBC_MIN="$(sh packaging/glibc-min.sh refconnect)"
           export GLIBC_MIN
           echo "glibc floor: ${GLIBC_MIN}"
+          if [ -n "${PKG_SIGNING_KEY}" ]; then
+            printf '%s\n' "${PKG_SIGNING_KEY}" > "${RUNNER_TEMP}/pkg-signing.asc"
+            export RPM_SIGNING_KEY_FILE="${RUNNER_TEMP}/pkg-signing.asc"
+          elif [ "${GITHUB_REPOSITORY}" = "S7R4nG3/refconnect" ]; then
+            echo "::error::PKG_SIGNING_KEY secret is not set; the DNF repo needs signed rpms"
+            exit 1
+          fi
           VERSION="${GITHUB_REF_NAME#v}" ARCH=amd64 $(go env GOPATH)/bin/nfpm package --packager deb --config packaging/nfpm.yaml --target .
           VERSION="${GITHUB_REF_NAME#v}" ARCH=amd64 $(go env GOPATH)/bin/nfpm package --packager rpm --config packaging/nfpm.yaml --target .
           ls -l refconnect*.deb refconnect*.rpm
@@ -91,12 +101,22 @@ jobs:
           tar -czf refconnect_linux_arm64.tar.gz refconnect refconnect.png refconnect.desktop
 
       - name: Build .deb / .rpm (nFPM)
+        env:
+          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+          NFPM_RPM_PASSPHRASE: ${{ secrets.PKG_SIGNING_KEY_PASSPHRASE }}
         run: |
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
           chmod +x packaging/scripts/*.sh
           GLIBC_MIN="$(sh packaging/glibc-min.sh refconnect)"
           export GLIBC_MIN
           echo "glibc floor: ${GLIBC_MIN}"
+          if [ -n "${PKG_SIGNING_KEY}" ]; then
+            printf '%s\n' "${PKG_SIGNING_KEY}" > "${RUNNER_TEMP}/pkg-signing.asc"
+            export RPM_SIGNING_KEY_FILE="${RUNNER_TEMP}/pkg-signing.asc"
+          elif [ "${GITHUB_REPOSITORY}" = "S7R4nG3/refconnect" ]; then
+            echo "::error::PKG_SIGNING_KEY secret is not set; the DNF repo needs signed rpms"
+            exit 1
+          fi
           VERSION="${GITHUB_REF_NAME#v}" ARCH=arm64 $(go env GOPATH)/bin/nfpm package --packager deb --config packaging/nfpm.yaml --target .
           VERSION="${GITHUB_REF_NAME#v}" ARCH=arm64 $(go env GOPATH)/bin/nfpm package --packager rpm --config packaging/nfpm.yaml --target .
           ls -l refconnect*.deb refconnect*.rpm
@@ -267,3 +287,113 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+  publish-repos:
+    name: Publish APT/DNF repos (GitHub Pages)
+    needs: release
+    if: github.repository == 'S7R4nG3/refconnect'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: refconnect_linux_*
+          path: pkgs
+          merge-multiple: true
+
+      - name: Install repo tools
+        run: sudo apt-get update && sudo apt-get install -y apt-utils createrepo-c
+
+      - name: Import signing key
+        env:
+          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+        run: |
+          printf '%s\n' "${PKG_SIGNING_KEY}" | gpg --batch --import
+          echo "SIGNING_KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')" >> "${GITHUB_ENV}"
+
+      - name: Build repos
+        env:
+          SIGNING_KEY_PASSPHRASE: ${{ secrets.PKG_SIGNING_KEY_PASSPHRASE }}
+        run: sh packaging/build-repos.sh pkgs site
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v5
+
+  verify-repos:
+    name: Verify install (${{ matrix.image }}, ${{ matrix.arch }}, ${{ matrix.mode }})
+    needs: publish-repos
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:24.04', 'debian:13', 'fedora:latest']
+        arch: [amd64, arm64]
+        mode: [fresh]
+        include:
+          # Upgrade from the previous release's package, as an existing user would.
+          - { image: 'ubuntu:24.04', arch: amd64, mode: upgrade }
+          - { image: 'fedora:latest', arch: amd64, mode: upgrade }
+    env:
+      SITE: https://s7r4ng3.github.io/refconnect
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pages can serve the previous deploy for a few minutes.
+      - name: Wait for the new repo to be live
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          for _ in $(seq 60); do
+            PRIMARY="$(curl -fsS "${SITE}/rpm/repodata/repomd.xml" | grep -o 'repodata/[^"]*-primary.xml.gz' || true)"
+            if curl -fsS "${SITE}/apt/dists/stable/main/binary-${{ matrix.arch }}/Packages" | grep -qx "Version: ${V}-1" \
+               && [ -n "${PRIMARY}" ] \
+               && curl -fsS "${SITE}/rpm/${PRIMARY}" | gunzip | grep -q "ver=\"${V}\""; then
+              echo "repo serves ${V}"; exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::${SITE} still does not serve ${V} after 15 minutes"; exit 1
+
+      - name: Fetch previous release package
+        if: matrix.mode == 'upgrade'
+        id: old
+        run: |
+          PREV="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --jq \
+            "[.[] | select(.draft|not) | select(.prerelease|not) | select(.tag_name != \"${GITHUB_REF_NAME}\")][0].tag_name")"
+          case "${{ matrix.image }}" in
+            fedora*) PAT="refconnect-*.x86_64.rpm" ;;
+            *) PAT="refconnect_*_amd64.deb" ;;
+          esac
+          mkdir old
+          if [ -n "${PREV}" ] && gh release download "${PREV}" -p "${PAT}" -D old 2>/dev/null; then
+            echo "path=$(ls old/*)" >> "${GITHUB_OUTPUT}"
+            echo "upgrading from ${PREV}"
+          else
+            echo "::notice::${PREV:-no previous release} has no ${PAT}; skipping the upgrade test"
+          fi
+
+      - name: Install in ${{ matrix.image }}
+        if: matrix.mode == 'fresh' || steps.old.outputs.path != ''
+        run: |
+          OLD="${{ steps.old.outputs.path }}"
+          mkdir -p old
+          docker run --rm \
+            -v "$PWD/packaging/test-install.sh:/test-install.sh:ro" \
+            -v "$PWD/old:/old:ro" \
+            "${{ matrix.image }}" sh /test-install.sh "${SITE}" "${GITHUB_REF_NAME#v}" ${OLD:+"/${OLD}"}

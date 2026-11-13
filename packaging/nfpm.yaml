@@ -41,6 +41,11 @@ contents:
     dst: /usr/share/icons/hicolor/32x32/apps/refconnect.png
   - src: ./LICENSE
     dst: /usr/share/doc/refconnect/copyright
+rpm:
+  # Signed in CI so dnf's gpgcheck passes; unset locally -> unsigned rpm.
+  # Passphrase comes from NFPM_RPM_PASSPHRASE.
+  signature:
+    key_file: "${RPM_SIGNING_KEY_FILE}"
 scripts:
   postinstall: ./packaging/scripts/postinstall.sh
   postremove: ./packaging/scripts/postremove.sh
@@ -56,5 +61,5 @@ overrides:
       - libXrandr
       - libXi
       - libXxf86vm
-      - wayland
+      - libwayland-client
       - libxkbcommon
