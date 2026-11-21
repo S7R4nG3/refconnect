@@ -145,8 +145,7 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
-	// Unlock first: the loops take c.mu, so waiting with it held can
-	// deadlock. Wait for them before closing channels to avoid send-on-closed.
+	// The loops take c.mu, so unlock before waiting for them to exit.
 	c.mu.Unlock()
 	c.wg.Wait()
 	close(c.hdrCh)

@@ -637,9 +637,7 @@ func (a *App) startRouter() {
 					dir := "RX"
 					if evt.Direction == router.DirTX {
 						dir = "TX"
-						// On a repeater link RPT1 is the repeater's own
-						// callsign; announcing it would speak for that
-						// gateway in ircDDB, so leave that to the gateway.
+						// On a repeater link the repeater's gateway announces.
 						if a.irc != nil && !a.repeaterLink {
 							a.irc.AnnounceUser(*evt.Header, "RefConnect by KR4GCQ")
 						}

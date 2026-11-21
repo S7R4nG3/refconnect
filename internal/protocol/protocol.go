@@ -22,9 +22,8 @@ type Config struct {
 	MyCall   string // local station callsign (8 chars, space-padded)
 	Protocol Protocol
 
-	// TargetCall is the target's D-STAR callsign without module (e.g. a
-	// repeater's "W4ABC"). When empty, clients that need it derive it from
-	// Host (e.g. "dcs001.xreflector.net" → "DCS001").
+	// TargetCall is the target's callsign without module (e.g. "W4ABC").
+	// If empty, clients derive it from Host.
 	TargetCall string
 }
 

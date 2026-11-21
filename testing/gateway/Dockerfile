@@ -1,6 +1,4 @@
-# DStarGateway (F4FXL's wxWidgets-free port of G4KLX ircDDBGateway) with one
-# homebrew repeater module, for testing RefConnect's repeater links offline.
-# See README.md.
+# DStarGateway with one homebrew repeater, for testing repeater links. See README.md.
 FROM debian:bookworm-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates git libboost-dev libcurl4-openssl-dev \
@@ -17,7 +15,7 @@ COPY --from=build /src/DStarGateway/dstargateway /usr/local/bin/
 COPY --from=build /src/Data /usr/local/share/dstargateway.d
 COPY dstargateway.cfg /etc/dstargateway.cfg.in
 COPY entrypoint.sh /usr/local/bin/
-# No reflector host lists: the gateway resolves every entry at startup.
+# Drop the reflector host lists: the gateway resolves every entry at startup.
 RUN rm /usr/local/share/dstargateway.d/*_Hosts.txt \
     && mkdir -p /var/log/dstargateway /usr/local/share/dstargateway.d/hostfiles.d
 # DPlus, DExtra, DCS incoming links.

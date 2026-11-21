@@ -106,9 +106,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 		return err
 	}
 
-	// Derive the reflector callsign from the hostname (e.g. "dcs001.openquad.net" → "DCS001")
-	// unless the caller named the target, as it must for a repeater: the
-	// gateway rejects a connect whose callsign isn't one of its repeaters.
+	// Derive the reflector callsign from the hostname (e.g. "dcs001.openquad.net" → "DCS001").
 	c.reflectorCall = deriveReflectorCall(cfg.Host)
 	if cfg.TargetCall != "" {
 		c.reflectorCall = dstar.PadCallsign(strings.ToUpper(cfg.TargetCall), 8)
@@ -137,9 +135,8 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 	log.Printf("dcs: received %d bytes from %s:\n%s", n, fromAddr, hex.Dump(buf[:min(n, 64)]))
 
-	// Repeater gateways (ircDDBGateway, DStarGateway) answer with a 14-byte
-	// reply: clientCall(8) + clientModule(1) + targetModule(1) + "ACK"/"NAK"
-	// + 0x00.
+	// Repeater gateways reply with 14 bytes: clientCall(8) + clientModule(1) +
+	// targetModule(1) + "ACK"/"NAK" + 0x00.
 	if n == 14 && string(buf[10:13]) == "NAK" {
 		return fail("connect rejected: no such repeater module",
 			fmt.Errorf("dcs: connect rejected"))
@@ -194,8 +191,7 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
-	// Unlock first: the loops take c.mu, so waiting with it held can
-	// deadlock. Wait for them before closing channels to avoid send-on-closed.
+	// The loops take c.mu, so unlock before waiting for them to exit.
 	c.mu.Unlock()
 	c.wg.Wait()
 	close(c.hdrCh)

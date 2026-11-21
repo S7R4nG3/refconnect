@@ -44,8 +44,7 @@ func TestParseEntryReflector(t *testing.T) {
 	}
 }
 
-// connectPanelWidgets builds the connect panel for cfg in a test window and
-// returns its widgets in layout order.
+// connectPanelWidgets builds the connect panel and returns its widgets in layout order.
 func connectPanelWidgets(t *testing.T, cfg *config.Config) (sw *toggleSwitch, selects []*widget.Select, entries []*widget.Entry) {
 	t.Helper()
 	test.NewTempApp(t)
@@ -73,9 +72,8 @@ func connectPanelWidgets(t *testing.T, cfg *config.Config) (sw *toggleSwitch, se
 	return sw, selects, entries
 }
 
-// The heading switch trades the Type row for a Protocol row. The Protocol row
-// starts hidden, so it must be laid out in its own row once shown, not left
-// at 0,0 over the Profile row.
+// The switch swaps the Type row for Protocol, which must get its own row once
+// shown rather than sit at 0,0.
 func TestConnectPanelRepeaterSwitch(t *testing.T) {
 	sw, selects, entries := connectPanelWidgets(t, config.Default())
 	profileSel, typeSel, protoSel := selects[0], selects[1], selects[2]

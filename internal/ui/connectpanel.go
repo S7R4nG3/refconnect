@@ -29,9 +29,8 @@ var reflectorTypes = []reflectorType{
 	{"DCS", protocol.ProtoDCS, 30051, "xreflector.net"},
 }
 
-// repeaterProtocols are the link protocols a repeater's gateway may accept,
-// DPlus first: it is the only one both ircDDBGateway and QnetGateway accept
-// from client apps (QnetGateway takes DExtra only from known gateways).
+// repeaterProtocols lists DPlus first: both ircDDBGateway and QnetGateway
+// accept it from clients.
 var repeaterProtocols = []struct {
 	proto protocol.Protocol
 	port  uint16
@@ -41,9 +40,8 @@ var repeaterProtocols = []struct {
 	{protocol.ProtoDCS, 30051},
 }
 
-// repeaterEntry builds the entry for linking to module of the repeater call
-// over proto. call is the repeater's callsign without module (at most 7
-// characters, since the 8th is the module); ok is false if it isn't valid.
+// repeaterEntry builds a repeater entry. call excludes the module (max 7
+// chars); ok is false if any field is invalid.
 func repeaterEntry(call, module, host, proto string) (config.ReflectorEntry, bool) {
 	call = strings.ToUpper(strings.TrimSpace(call))
 	if call == "" || len(call) > 7 || strings.ContainsAny(call, " ") || module == "" || host == "" {
@@ -75,8 +73,7 @@ func reflectorTypeByPrefix(prefix string) reflectorType {
 
 // parseEntry splits a saved reflector entry back into the UI field values
 // (type prefix, ID, domain, module). Returns empty prefix if Name does not
-// match any known reflector family. Repeater entries (RepeaterCall set) are
-// loaded directly, not through here.
+// match any known reflector family.
 func parseEntry(e config.ReflectorEntry) (prefix, id, domain, module string) {
 	name := strings.ToUpper(strings.TrimSpace(e.Name))
 	for _, rt := range reflectorTypes {
@@ -126,13 +123,11 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	// ID — e.g. REF + 001 + dstargateway.org -> "ref001.dstargateway.org". When
 	// the family has no default domain (XLX), it returns just the "<prefix><id>"
 	// stub for the user to complete.
-	// repeaterMode switches the panel from linking to a reflector to linking
-	// to a repeater's gateway: the ID field then holds the repeater callsign,
-	// the Type row gives way to a Protocol row, and the host is user-entered.
+	// repeaterMode links to a repeater's gateway instead of a reflector.
 	repeaterMode := false
 
 	defaultHost := func(rt reflectorType, id string) string {
-		// A repeater's gateway has no conventional hostname; the user enters it.
+		// Repeaters have no conventional hostname.
 		if repeaterMode {
 			return ""
 		}
@@ -196,8 +191,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		}
 	}
 
-	// protoSelect picks a repeater's link protocol; reflector families have a
-	// fixed one, so it is shown only in repeater mode.
+	// protoSelect is repeater-only; reflector types fix the protocol.
 	protoNames := make([]string, len(repeaterProtocols))
 	for i, rp := range repeaterProtocols {
 		protoNames[i] = string(rp.proto)
@@ -214,13 +208,11 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	})
 	typeSelect.SetSelected("REF")
 
-	// The heading doubles as the mode switch: "Reflector ⟷ Repeater", with
-	// the active side in bold.
+	// The heading is the mode switch; the active side is bold.
 	reflectorHeading := widget.NewLabel("Reflector")
 	repeaterHeading := widget.NewLabel("Repeater")
 
-	// showMode lays the panel out for repeaterMode, then refreshes it so it
-	// makes room for the rows it now shows or hides.
+	// showMode shows the current mode's rows and refreshes the layout.
 	var fields, panel *fyne.Container
 	showMode := func() {
 		reflectorHeading.TextStyle.Bold = !repeaterMode
@@ -249,8 +241,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	}
 	showMode()
 
-	// Each mode keeps its own ID and host, so flipping the switch back and
-	// forth doesn't lose what was typed in either.
+	// Each mode keeps its own ID and host.
 	type modeFields struct {
 		id, host   string
 		hostManual bool

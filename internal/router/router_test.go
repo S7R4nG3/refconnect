@@ -321,9 +321,7 @@ func TestTXReplacesRadioTextKeepsRadioGPS(t *testing.T) {
 	}
 }
 
-// Outbound headers must name the link target the way it routes them: a
-// reflector by RPT2, a repeater's gateway by its module in RPT1 (DPlus and
-// DExtra) or RPT2 (DCS). Anything else is silently dropped by the far end.
+// The far end drops headers that don't name it the way it routes them.
 func TestRewriteHeaderForLinkTarget(t *testing.T) {
 	cases := []struct {
 		name       string

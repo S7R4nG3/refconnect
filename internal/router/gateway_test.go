@@ -2,13 +2,9 @@
 
 package router
 
-// Integration test against a real repeater gateway: DStarGateway, built and
-// started by testing/gateway/run.sh, which then runs
-//
-//	go test -tags gateway -run Gateway -v ./internal/router
-//
-// The gateway serves repeater N0CALL module B and sends whatever it would
-// put on the air to this test as homebrew (DSRP) packets on UDP 20011.
+// Integration test against DStarGateway; run it with testing/gateway/run.sh.
+// The gateway serves repeater N0CALL B and sends what it would transmit to
+// UDP 20011 as homebrew (DSRP) packets.
 
 import (
 	"bytes"
@@ -44,8 +40,7 @@ func gatewayHost() string {
 	return "127.0.0.1"
 }
 
-// gwTransmit links to the gateway, keys up through the router with cfg, and
-// returns what reached the repeater.
+// gwTransmit links, transmits through the router and returns what reached the repeater.
 func gwTransmit(t *testing.T, rf *net.UDPConn, ref protocol.Reflector, port uint16, cfg Config) gwHeard {
 	t.Helper()
 	err := ref.Connect(protocol.Config{
@@ -138,13 +133,13 @@ func TestGatewayRepeaterLink(t *testing.T) {
 			if heard.header == nil {
 				t.Fatal("gateway put no header on the air")
 			}
-			// DSRP header: RPT2 [11:19], RPT1 [19:27], URCALL [27:35], MYCALL [35:43].
+			// DSRP header: RPT2 [11:19], RPT1 [19:27], UR [27:35], MY [35:43].
 			h := heard.header
 			t.Logf("on air: RPT1=%q RPT2=%q UR=%q MY=%q, %d frames", h[19:27], h[11:19], h[27:35], h[35:43], heard.frames)
 			if got := string(h[35:43]); got != "N0TEST  " {
 				t.Errorf("MYCALL on air = %q", got)
 			}
-			// Downlink layout: RPT1 = gateway, RPT2 = the repeater module.
+			// On air RPT1 is the gateway and RPT2 the module.
 			if got := string(h[11:19]); got != "N0CALL B" {
 				t.Errorf("RPT2 on air = %q, want the repeater module", got)
 			}
@@ -155,8 +150,7 @@ func TestGatewayRepeaterLink(t *testing.T) {
 		time.Sleep(time.Second) // let the gateway release the module
 	}
 
-	// Control: the reflector header layout the app sent before repeater
-	// support (RPT2 = "REF001 B") must be dropped, or this test proves nothing.
+	// Control: the old reflector layout (RPT2 = "REF001 B") must be dropped.
 	t.Run("ReflectorLayoutDropped", func(t *testing.T) {
 		heard := gwTransmit(t, rf, dplus.New(), dplus.DefaultPort, Config{
 			ReflectorCall: "REF001", ReflectorModule: gwModule, Protocol: protocol.ProtoDPlus,

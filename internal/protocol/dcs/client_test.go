@@ -26,8 +26,7 @@ func fakeServer(t *testing.T, reply []byte) uint16 {
 	return uint16(conn.LocalAddr().(*net.UDPAddr).Port)
 }
 
-// Repeater gateways (ircDDBGateway, DStarGateway) answer a connect with a
-// 14-byte ACK or NAK rather than the 22-byte reply DCS reflectors send.
+// Repeater gateways reply with a 14-byte ACK/NAK, not the 22-byte reflector reply.
 func TestConnectRepeaterGatewayReply(t *testing.T) {
 	for _, c := range []struct {
 		reply string

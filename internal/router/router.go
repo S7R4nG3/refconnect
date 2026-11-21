@@ -63,9 +63,8 @@ type Config struct {
 	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
 	ReflectorCall string
 
-	// Repeater marks ReflectorCall as a repeater's callsign: the link is to
-	// the repeater's gateway, which routes by RPT1/RPT2 differently (see
-	// linkRepeaters). Protocol is the link protocol, which picks the layout.
+	// Repeater means ReflectorCall is a repeater; with Protocol it picks the
+	// RPT1/RPT2 layout (see linkRepeaters).
 	Repeater bool
 	Protocol protocol.Protocol
 
@@ -166,18 +165,12 @@ func (rt *Router) SendBeacon(dprsSentence string) (dstar.DVHeader, error) {
 	return beacon.Send(rt.reflector, rt.cfg.MyCall, rpt1, rpt2, dprsSentence)
 }
 
-// linkRepeaters returns the RPT1/RPT2 an outbound header needs for the link
-// target to accept it.
+// linkRepeaters returns the RPT1/RPT2 the link target accepts:
+//   - reflector, or repeater over DCS: MyCall / target+module ("KR4GCQ D" / "REF001 C")
+//   - repeater over DPlus/DExtra: target+module / target+'G' ("W4ABC  B" / "W4ABC  G")
 //
-// A reflector validates that RPT2 is its own callsign + module, with RPT1 our
-// gateway ("KR4GCQ D" / "REF001 C").
-//
-// A repeater's gateway drops headers that don't name one of its repeaters.
-// Over DPlus and DExtra a client sends RPT1 = the repeater module and RPT2 =
-// its gateway ("W4ABC  B" / "W4ABC  G"), as a DV Dongle does: ircDDBGateway
-// accepts the module in either field and QnetGateway requires it in RPT1.
-// ircDDBGateway's DCS handler only checks RPT2, so DCS keeps the reflector
-// layout.
+// RPT1 = MyCall keeps the suffix sent in the connect packet; XRF reflectors
+// drop headers where they differ.
 func (rt *Router) linkRepeaters() (rpt1, rpt2 string) {
 	target := withModule(rt.cfg.ReflectorCall, rt.cfg.ReflectorModule)
 	if rt.cfg.Repeater && rt.cfg.Protocol != protocol.ProtoDCS {
@@ -186,8 +179,7 @@ func (rt *Router) linkRepeaters() (rpt1, rpt2 string) {
 	return dstar.PadCallsign(rt.cfg.MyCall, 8), target
 }
 
-// withModule builds an 8-char callsign with mod as its 8th character
-// (e.g. "REF001" + 'C' → "REF001 C").
+// withModule pads call to 8 chars with mod as the 8th ("REF001" + 'C' → "REF001 C").
 func withModule(call string, mod byte) string {
 	b := []byte(dstar.PadCallsign(call, 8))
 	b[7] = mod
@@ -227,10 +219,6 @@ func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
 	if rt.cfg.MyCall == "" {
 		return
 	}
-	// For a reflector, RPT1 is MyCall, which already encodes the 8th-character
-	// suffix chosen in the UI; overriding it would mismatch the local module
-	// sent in the connect packet and cause XRF reflectors to silently drop the
-	// header.
 	hdr.RPT1, hdr.RPT2 = rt.linkRepeaters()
 	// URCALL = "CQCQCQ  " for a general call
 	hdr.YourCall = dstar.CQCall

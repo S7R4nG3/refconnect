@@ -1,16 +1,13 @@
 #!/bin/sh
-# Builds and starts a local DStarGateway repeater gateway, runs RefConnect's
-# gateway integration test against it, prints the gateway's log, and removes
-# the container. KEEP=1 leaves the gateway running afterwards, e.g. to link
-# the app to it by hand (Repeater mode: N0CALL, module B, host 127.0.0.1).
+# Runs the gateway integration test against a local DStarGateway (see README.md).
+# RUN=<pattern> picks tests; KEEP=1 leaves the gateway running.
 set -eu
 cd "$(dirname "$0")"
 NAME=refconnect-test-gateway
 
 docker build -q -t "$NAME" . >/dev/null
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-# auth.dstargateway.org → 127.0.0.1 keeps the DPlus login, which starts
-# whenever DPlus is enabled, off the real trust server.
+# Keep the DPlus login off the real auth server.
 docker run -d --name "$NAME" \
   --add-host auth.dstargateway.org:127.0.0.1 \
   --add-host host.docker.internal:host-gateway \
