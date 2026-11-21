@@ -137,18 +137,27 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 	log.Printf("dcs: received %d bytes from %s:\n%s", n, fromAddr, hex.Dump(buf[:min(n, 64)]))
 
-	// DCS servers respond to a successful connect with a 22-byte ACK that
+	// Repeater gateways (ircDDBGateway, DStarGateway) answer with a 14-byte
+	// reply: clientCall(8) + clientModule(1) + targetModule(1) + "ACK"/"NAK"
+	// + 0x00.
+	if n == 14 && string(buf[10:13]) == "NAK" {
+		return fail("connect rejected: no such repeater module",
+			fmt.Errorf("dcs: connect rejected"))
+	}
+	ack14 := n == 14 && string(buf[10:13]) == "ACK"
+
+	// DCS reflectors respond to a successful connect with a 22-byte ACK that
 	// looks like a keepalive: reflectorCall(7) + module(1) + space(1) +
 	// clientCall(7) + clientModule(2) + tag{0x0A,0x00,0x20,0x20}.
 	// Verify the response contains our callsign to confirm the link.
-	if n < 22 {
+	if !ack14 && n < 22 {
 		return fail(
 			fmt.Sprintf("connect rejected by reflector (got %d bytes)", n),
 			fmt.Errorf("dcs: connect rejected"),
 		)
 	}
 	// Sanity check: the trailing tag bytes should be {0x0A, 0x00, 0x20, 0x20}.
-	if n >= 22 && buf[n-4] != 0x0A {
+	if !ack14 && buf[n-4] != 0x0A {
 		return fail(
 			fmt.Sprintf("connect rejected by reflector (unexpected response: %d bytes)", n),
 			fmt.Errorf("dcs: connect rejected"),
@@ -165,9 +174,9 @@ func (c *Client) Connect(cfg protocol.Config) error {
 
 func (c *Client) Disconnect() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.conn == nil {
+		c.mu.Unlock()
 		return nil
 	}
 	// Send disconnect in both short (11-byte) and long (19-byte) formats.
@@ -185,6 +194,9 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
+	// Unlock first: the loops take c.mu, so waiting with it held can
+	// deadlock. Wait for them before closing channels to avoid send-on-closed.
+	c.mu.Unlock()
 	c.wg.Wait()
 	close(c.hdrCh)
 	close(c.frmCh)
