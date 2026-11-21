@@ -106,8 +106,13 @@ func (c *Client) Connect(cfg protocol.Config) error {
 		return err
 	}
 
-	// Derive the reflector callsign from the hostname (e.g. "dcs001.openquad.net" → "DCS001").
+	// Derive the reflector callsign from the hostname (e.g. "dcs001.openquad.net" → "DCS001")
+	// unless the caller named the target, as it must for a repeater: the
+	// gateway rejects a connect whose callsign isn't one of its repeaters.
 	c.reflectorCall = deriveReflectorCall(cfg.Host)
+	if cfg.TargetCall != "" {
+		c.reflectorCall = dstar.PadCallsign(strings.ToUpper(cfg.TargetCall), 8)
+	}
 	c.reflectorModule = cfg.Module
 
 	// DCS protocol module is hardcoded to 'G' so the reflector classifies

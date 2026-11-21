@@ -29,6 +29,41 @@ var reflectorTypes = []reflectorType{
 	{"DCS", protocol.ProtoDCS, 30051, "xreflector.net"},
 }
 
+// repeaterProtocols are the link protocols a repeater's gateway may accept,
+// DPlus first: it is the only one both ircDDBGateway and QnetGateway accept
+// from client apps (QnetGateway takes DExtra only from known gateways).
+var repeaterProtocols = []struct {
+	proto protocol.Protocol
+	port  uint16
+}{
+	{protocol.ProtoDPlus, 20001},
+	{protocol.ProtoDExtra, 30001},
+	{protocol.ProtoDCS, 30051},
+}
+
+// repeaterEntry builds the entry for linking to module of the repeater call
+// over proto. call is the repeater's callsign without module (at most 7
+// characters, since the 8th is the module); ok is false if it isn't valid.
+func repeaterEntry(call, module, host, proto string) (config.ReflectorEntry, bool) {
+	call = strings.ToUpper(strings.TrimSpace(call))
+	if call == "" || len(call) > 7 || strings.ContainsAny(call, " ") || module == "" || host == "" {
+		return config.ReflectorEntry{}, false
+	}
+	for _, rp := range repeaterProtocols {
+		if string(rp.proto) == proto {
+			return config.ReflectorEntry{
+				Name:         call + " " + module,
+				Host:         host,
+				Port:         rp.port,
+				Module:       module,
+				Protocol:     proto,
+				RepeaterCall: call,
+			}, true
+		}
+	}
+	return config.ReflectorEntry{}, false
+}
+
 func reflectorTypeByPrefix(prefix string) reflectorType {
 	for _, rt := range reflectorTypes {
 		if rt.prefix == prefix {
@@ -40,7 +75,8 @@ func reflectorTypeByPrefix(prefix string) reflectorType {
 
 // parseEntry splits a saved reflector entry back into the UI field values
 // (type prefix, ID, domain, module). Returns empty prefix if Name does not
-// match any known reflector family.
+// match any known reflector family. Repeater entries (RepeaterCall set) are
+// loaded directly, not through here.
 func parseEntry(e config.ReflectorEntry) (prefix, id, domain, module string) {
 	name := strings.ToUpper(strings.TrimSpace(e.Name))
 	for _, rt := range reflectorTypes {
@@ -90,7 +126,16 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	// ID — e.g. REF + 001 + dstargateway.org -> "ref001.dstargateway.org". When
 	// the family has no default domain (XLX), it returns just the "<prefix><id>"
 	// stub for the user to complete.
+	// repeaterMode switches the panel from linking to a reflector to linking
+	// to a repeater's gateway: the ID field then holds the repeater callsign,
+	// the Type row gives way to a Protocol row, and the host is user-entered.
+	repeaterMode := false
+
 	defaultHost := func(rt reflectorType, id string) string {
+		// A repeater's gateway has no conventional hostname; the user enters it.
+		if repeaterMode {
+			return ""
+		}
 		base := strings.ToLower(rt.prefix) + strings.ToLower(strings.TrimSpace(id))
 		if strings.TrimSpace(rt.defaultDomain) == "" {
 			return base
@@ -141,13 +186,7 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 
 	setHost(defaultHost(selectedType, currentID))
 
-	typeSelect := widget.NewSelect(typeNames, func(s string) {
-		selectedType = reflectorTypeByPrefix(s)
-		hostManual = false
-		setHost(defaultHost(selectedType, currentID))
-	})
-	typeSelect.SetSelected("REF")
-
+	idLabel := widget.NewLabel("ID:")
 	idEntry := widget.NewEntry()
 	idEntry.SetText("001")
 	idEntry.OnChanged = func(s string) {
@@ -156,6 +195,93 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			setHost(defaultHost(selectedType, currentID))
 		}
 	}
+
+	// protoSelect picks a repeater's link protocol; reflector families have a
+	// fixed one, so it is shown only in repeater mode.
+	protoNames := make([]string, len(repeaterProtocols))
+	for i, rp := range repeaterProtocols {
+		protoNames[i] = string(rp.proto)
+	}
+	protoLabel := widget.NewLabel("Protocol:")
+	protoSelect := widget.NewSelect(protoNames, nil)
+	protoSelect.SetSelected(protoNames[0])
+
+	typeLabel := widget.NewLabel("Type:")
+	typeSelect := widget.NewSelect(typeNames, func(s string) {
+		selectedType = reflectorTypeByPrefix(s)
+		hostManual = false
+		setHost(defaultHost(selectedType, currentID))
+	})
+	typeSelect.SetSelected("REF")
+
+	// The heading doubles as the mode switch: "Reflector ⟷ Repeater", with
+	// the active side in bold.
+	reflectorHeading := widget.NewLabel("Reflector")
+	repeaterHeading := widget.NewLabel("Repeater")
+
+	// showMode lays the panel out for repeaterMode, then refreshes it so it
+	// makes room for the rows it now shows or hides.
+	var fields, panel *fyne.Container
+	showMode := func() {
+		reflectorHeading.TextStyle.Bold = !repeaterMode
+		repeaterHeading.TextStyle.Bold = repeaterMode
+		reflectorHeading.Refresh()
+		repeaterHeading.Refresh()
+		if repeaterMode {
+			idLabel.SetText("Repeater:")
+			idEntry.SetPlaceHolder("callsign, e.g. W4ABC")
+			typeLabel.Hide()
+			typeSelect.Hide()
+			protoLabel.Show()
+			protoSelect.Show()
+		} else {
+			idLabel.SetText("ID:")
+			idEntry.SetPlaceHolder("001")
+			typeLabel.Show()
+			typeSelect.Show()
+			protoLabel.Hide()
+			protoSelect.Hide()
+		}
+		if panel != nil {
+			fields.Refresh()
+			panel.Refresh()
+		}
+	}
+	showMode()
+
+	// Each mode keeps its own ID and host, so flipping the switch back and
+	// forth doesn't lose what was typed in either.
+	type modeFields struct {
+		id, host   string
+		hostManual bool
+	}
+	saved := [2]modeFields{{id: "001"}} // [reflector, repeater]
+	modeIndex := func(repeater bool) int {
+		if repeater {
+			return 1
+		}
+		return 0
+	}
+	var modeSwitch *toggleSwitch
+	setMode := func(repeater bool) {
+		if repeater == repeaterMode {
+			return
+		}
+		saved[modeIndex(repeaterMode)] = modeFields{idEntry.Text, hostEntry.Text, hostManual}
+		repeaterMode = repeater
+		next := saved[modeIndex(repeater)]
+		hostManual = true // keep the ID handler from rewriting the host
+		idEntry.SetText(next.id)
+		hostManual = next.hostManual
+		if hostManual || repeater {
+			setHost(next.host)
+		} else {
+			setHost(defaultHost(selectedType, currentID))
+		}
+		modeSwitch.SetChecked(repeater)
+		showMode()
+	}
+	modeSwitch = newToggleSwitch(false, setMode)
 
 	moduleSelect := widget.NewSelect(modules, nil)
 	moduleSelect.SetSelected("C")
@@ -180,6 +306,9 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		id := strings.TrimSpace(idEntry.Text)
 		module := moduleSelect.Selected
 		host := strings.TrimSpace(hostEntry.Text)
+		if repeaterMode {
+			return repeaterEntry(id, module, host, protoSelect.Selected)
+		}
 		if id == "" || module == "" || host == "" {
 			return config.ReflectorEntry{}, false
 		}
@@ -208,10 +337,20 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 			if r.Name != name {
 				continue
 			}
+			if r.RepeaterCall != "" {
+				setMode(true)
+				hostManual = true
+				idEntry.SetText(strings.ToUpper(r.RepeaterCall))
+				moduleSelect.SetSelected(r.Module)
+				protoSelect.SetSelected(r.Protocol)
+				setHost(r.Host)
+				return
+			}
 			p, id, _, mod := parseEntry(r)
 			if p == "" {
 				return
 			}
+			setMode(false)
 			typeSelect.SetSelected(p) // resets host + hostManual
 			selectedType = reflectorTypeByPrefix(p)
 			idEntry.SetText(id)
@@ -246,6 +385,10 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 	saveBtn := widget.NewButton("Save profile", func() {
 		e, ok := captureEntry()
 		if !ok {
+			if repeaterMode {
+				a.appendLog("Enter the repeater callsign (up to 7 characters, without module), module and host before saving.")
+				return
+			}
 			a.appendLog("Enter an ID and module before saving.")
 			return
 		}
@@ -316,7 +459,11 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		module := moduleSelect.Selected
 
 		if id == "" {
-			a.appendLog("Please enter a reflector ID.")
+			if repeaterMode {
+				a.appendLog("Please enter the repeater callsign.")
+			} else {
+				a.appendLog("Please enter a reflector ID.")
+			}
 			return
 		}
 		if module == "" {
@@ -332,6 +479,10 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		a.cfg.CallsignSuffix = suffixSelect.Selected
 
 		entry, ok := captureEntry()
+		if !ok && repeaterMode {
+			a.appendLog("Enter the repeater callsign (up to 7 characters, without module) and the gateway's host before connecting.")
+			return
+		}
 		if !ok {
 			a.appendLog("Please complete reflector fields before connecting.")
 			return
@@ -357,18 +508,21 @@ func buildConnectPanel(a *App) fyne.CanvasObject {
 		}()
 	}
 
-	return container.NewVBox(
-		widget.NewLabel("Reflector"),
-		container.NewGridWithColumns(2,
-			widget.NewLabel("Profile:"), profileSelect,
-			widget.NewLabel("Type:"), typeSelect,
-			widget.NewLabel("ID:"), idEntry,
-			widget.NewLabel("Host:"), hostEntry,
-			widget.NewLabel("Link:"), hostLink,
-			widget.NewLabel("Module:"), moduleSelect,
-			widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
-		),
+	fields = container.NewGridWithColumns(2,
+		widget.NewLabel("Profile:"), profileSelect,
+		typeLabel, typeSelect,
+		protoLabel, protoSelect,
+		idLabel, idEntry,
+		widget.NewLabel("Host:"), hostEntry,
+		widget.NewLabel("Link:"), hostLink,
+		widget.NewLabel("Module:"), moduleSelect,
+		widget.NewLabel("Callsign:"), container.NewBorder(nil, nil, nil, suffixSelect, callsignEntry),
+	)
+	panel = container.NewVBox(
+		container.NewHBox(reflectorHeading, modeSwitch, repeaterHeading),
+		fields,
 		container.NewGridWithColumns(2, saveBtn, deleteBtn),
 		toggleBtn,
 	)
+	return panel
 }

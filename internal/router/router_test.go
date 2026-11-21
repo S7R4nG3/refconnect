@@ -320,3 +320,37 @@ func TestTXReplacesRadioTextKeepsRadioGPS(t *testing.T) {
 		t.Errorf("DPRS = %q, want the radio's %q", dprs, radioDPRS)
 	}
 }
+
+// Outbound headers must name the link target the way it routes them: a
+// reflector by RPT2, a repeater's gateway by its module in RPT1 (DPlus and
+// DExtra) or RPT2 (DCS). Anything else is silently dropped by the far end.
+func TestRewriteHeaderForLinkTarget(t *testing.T) {
+	cases := []struct {
+		name       string
+		cfg        Config
+		rpt1, rpt2 string
+	}{
+		{"reflector", Config{ReflectorCall: "REF001", ReflectorModule: 'C', Protocol: protocol.ProtoDPlus},
+			"KR4GCQ D", "REF001 C"},
+		{"repeater DPlus", Config{ReflectorCall: "W4ABC", ReflectorModule: 'B', Repeater: true, Protocol: protocol.ProtoDPlus},
+			"W4ABC  B", "W4ABC  G"},
+		{"repeater DExtra", Config{ReflectorCall: "W4ABC", ReflectorModule: 'B', Repeater: true, Protocol: protocol.ProtoDExtra},
+			"W4ABC  B", "W4ABC  G"},
+		{"repeater DCS", Config{ReflectorCall: "W4ABC", ReflectorModule: 'B', Repeater: true, Protocol: protocol.ProtoDCS},
+			"KR4GCQ D", "W4ABC  B"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.cfg.MyCall = "KR4GCQ D"
+			rt := New(newFakeRadio(), newFakeReflector(), c.cfg)
+			hdr := dstar.DVHeader{MyCall: "KR4GCQ  ", YourCall: "       E", RPT1: "DIRECT  ", RPT2: "DIRECT  "}
+			rt.rewriteHeaderForReflector(&hdr)
+			if hdr.RPT1 != c.rpt1 || hdr.RPT2 != c.rpt2 {
+				t.Errorf("RPT1=%q RPT2=%q, want %q %q", hdr.RPT1, hdr.RPT2, c.rpt1, c.rpt2)
+			}
+			if hdr.YourCall != dstar.CQCall {
+				t.Errorf("URCALL=%q, want %q", hdr.YourCall, dstar.CQCall)
+			}
+		})
+	}
+}

@@ -63,6 +63,12 @@ type Config struct {
 	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
 	ReflectorCall string
 
+	// Repeater marks ReflectorCall as a repeater's callsign: the link is to
+	// the repeater's gateway, which routes by RPT1/RPT2 differently (see
+	// linkRepeaters). Protocol is the link protocol, which picks the layout.
+	Repeater bool
+	Protocol protocol.Protocol
+
 	// TXText is a D-STAR slow data text message (up to 20 chars) sent in
 	// each outgoing transmission in place of the radio's own TX message. It
 	// appears as the "User Message" on reflector status pages and ircDDB Last
@@ -156,14 +162,34 @@ func (rt *Router) GPS() *aprs.Cache { return rt.gps }
 func (rt *Router) SendBeacon(dprsSentence string) (dstar.DVHeader, error) {
 	rt.txMu.Lock()
 	defer rt.txMu.Unlock()
-	return beacon.Send(rt.reflector, rt.cfg.MyCall,
-		rt.cfg.MyCall, reflectorRPT2(rt.cfg.ReflectorCall, rt.cfg.ReflectorModule),
-		dprsSentence)
+	rpt1, rpt2 := rt.linkRepeaters()
+	return beacon.Send(rt.reflector, rt.cfg.MyCall, rpt1, rpt2, dprsSentence)
 }
 
-// reflectorRPT2 builds the 8-char RPT2 string from reflector call + module.
-func reflectorRPT2(refl string, mod byte) string {
-	b := []byte(dstar.PadCallsign(refl, 8))
+// linkRepeaters returns the RPT1/RPT2 an outbound header needs for the link
+// target to accept it.
+//
+// A reflector validates that RPT2 is its own callsign + module, with RPT1 our
+// gateway ("KR4GCQ D" / "REF001 C").
+//
+// A repeater's gateway drops headers that don't name one of its repeaters.
+// Over DPlus and DExtra a client sends RPT1 = the repeater module and RPT2 =
+// its gateway ("W4ABC  B" / "W4ABC  G"), as a DV Dongle does: ircDDBGateway
+// accepts the module in either field and QnetGateway requires it in RPT1.
+// ircDDBGateway's DCS handler only checks RPT2, so DCS keeps the reflector
+// layout.
+func (rt *Router) linkRepeaters() (rpt1, rpt2 string) {
+	target := withModule(rt.cfg.ReflectorCall, rt.cfg.ReflectorModule)
+	if rt.cfg.Repeater && rt.cfg.Protocol != protocol.ProtoDCS {
+		return target, withModule(rt.cfg.ReflectorCall, 'G')
+	}
+	return dstar.PadCallsign(rt.cfg.MyCall, 8), target
+}
+
+// withModule builds an 8-char callsign with mod as its 8th character
+// (e.g. "REF001" + 'C' → "REF001 C").
+func withModule(call string, mod byte) string {
+	b := []byte(dstar.PadCallsign(call, 8))
 	b[7] = mod
 	return string(b)
 }
@@ -201,16 +227,11 @@ func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
 	if rt.cfg.MyCall == "" {
 		return
 	}
-	// RPT1 = local gateway callsign (e.g. "KR4GCQ  " or "KR4GCQ G").
-	// MyCall already encodes the correct 8th-character suffix chosen in the UI;
-	// overriding it here would mismatch the local module sent in the connect packet
-	// and cause XRF reflectors to silently drop the header.
-	hdr.RPT1 = dstar.PadCallsign(rt.cfg.MyCall, 8)
-	// RPT2 = reflector callsign + module (e.g. "REF001 C").
-	// The reflector validates that RPT2 matches its own callsign.
-	rpt2 := []byte(dstar.PadCallsign(rt.cfg.ReflectorCall, 8))
-	rpt2[7] = rt.cfg.ReflectorModule
-	hdr.RPT2 = string(rpt2)
+	// For a reflector, RPT1 is MyCall, which already encodes the 8th-character
+	// suffix chosen in the UI; overriding it would mismatch the local module
+	// sent in the connect packet and cause XRF reflectors to silently drop the
+	// header.
+	hdr.RPT1, hdr.RPT2 = rt.linkRepeaters()
 	// URCALL = "CQCQCQ  " for a general call
 	hdr.YourCall = dstar.CQCall
 	// Flag1 = 0x00 for a forwarded (not TX-direction) header
