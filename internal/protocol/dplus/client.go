@@ -21,6 +21,9 @@ const dplusLogRXPackets = false
 const (
 	keepaliveInterval = 5 * time.Second
 	connectTimeout    = 10 * time.Second
+	// linkTimeout: no packets from the far end for this long means the link
+	// is gone (gateways and reflectors send keepalives every few seconds).
+	linkTimeout = 30 * time.Second
 	udpReadBuf        = 4096
 )
 
@@ -42,6 +45,9 @@ type Client struct {
 	rxKeepaliveCount int
 	rxStreamID       [2]byte // current inbound stream ID for dedup
 	rxStreamActive   bool
+	lastRX           time.Time
+	linkLost         bool
+	readOnly         bool // login answered OKRO
 }
 
 // New returns a new DPlus client.
@@ -139,7 +145,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 		return fail("CT_LINK1 echo timeout: "+err.Error(), err)
 	}
 
-	// Step 2: send CT_LINK2 login packet and wait for OKRW or BUSY ACK.
+	// Step 2: send CT_LINK2 login packet and wait for OKRW/OKRO or BUSY ACK.
 	loginPkt := buildLoginPacket(cfg.MyCall)
 	log.Printf("dplus: sending CT_LINK2 login to %s:%d:\n%s", cfg.Host, cfg.Port, hex.Dump(loginPkt))
 	if _, err := conn.WriteToUDP(loginPkt, addr); err != nil {
@@ -151,22 +157,36 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 
 	// ACK is 8 bytes: 08 C0 04 00 + 4-byte status.
-	// "OKRW" (4F 4B 52 57) = accepted; "BUSY" (42 55 53 59) = module in use.
+	// "OKRW" = accepted read/write; "OKRO" = accepted read-only (sent by some
+	// repeater gateways); "BUSY" = module in use.
 	if buf[4] == 'B' && buf[5] == 'U' && buf[6] == 'S' && buf[7] == 'Y' {
 		return fail("module busy — reflector already linked; wait a moment and retry",
 			fmt.Errorf("dplus: module busy"))
 	}
-	if n < 8 || buf[4] != 'O' || buf[5] != 'K' || buf[6] != 'R' || buf[7] != 'W' {
+	status := ""
+	if n >= 8 {
+		status = string(buf[4:8])
+	}
+	if status != "OKRW" && status != "OKRO" {
 		show := n
 		if show > 8 {
 			show = 8
 		}
-		return fail(fmt.Sprintf("login rejected (expected OKRW, got %q)", buf[:show]),
+		return fail(fmt.Sprintf("login rejected (expected OKRW or OKRO, got %q)", buf[:show]),
 			fmt.Errorf("dplus: login rejected"))
 	}
 
+	msg := fmt.Sprintf("Linked to %s module %c", cfg.Host, cfg.Module)
+	// c.mu is held for all of Connect.
+	c.readOnly = status == "OKRO"
+	c.lastRX = time.Now()
+	c.linkLost = false
+	if status == "OKRO" {
+		log.Printf("dplus: %s granted read-only access (OKRO); transmissions may not be relayed", cfg.Host)
+		msg += " (read-only: gateway may not relay your transmissions)"
+	}
 	log.Printf("dplus: connected from local %s to %s", conn.LocalAddr(), addr)
-	c.setState(protocol.StateConnected, fmt.Sprintf("Linked to %s module %c", cfg.Host, cfg.Module))
+	c.setState(protocol.StateConnected, msg)
 	c.wg.Add(2)
 	go c.rxLoop()
 	go c.keepaliveLoop()
@@ -200,10 +220,13 @@ func (c *Client) SendHeader(hdr dstar.DVHeader) error {
 	// Generate a new stream ID for each transmission so the reflector
 	// treats it as a distinct voice stream.
 	c.streamID = nextStreamID()
-	conn, addr, sid := c.conn, c.remoteAddr, c.streamID
+	conn, addr, sid, ro := c.conn, c.remoteAddr, c.streamID, c.readOnly
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("dplus: not connected")
+	}
+	if ro {
+		log.Printf("dplus: transmitting on a read-only (OKRO) link; the gateway may drop it")
 	}
 	log.Printf("dplus: SendHeader streamID=%02X RPT1=%q RPT2=%q MYCALL=%q URCALL=%q",
 		sid, hdr.RPT1, hdr.RPT2, hdr.MyCall, hdr.YourCall)
@@ -267,6 +290,28 @@ func (c *Client) rxLoop() {
 			return
 		}
 		if n < 2 {
+			continue
+		}
+		c.mu.Lock()
+		c.lastRX = time.Now()
+		recovered := c.linkLost
+		c.linkLost = false
+		c.mu.Unlock()
+		if recovered {
+			c.setState(protocol.StateConnected, "Link traffic resumed")
+		}
+		// CT_UNLINK from the far end: 05 00 18 00 00.
+		if n == 5 && buf[0] == 0x05 && buf[2] == 0x18 && buf[4] == 0x00 {
+			log.Printf("dplus: far end sent unlink")
+			c.mu.Lock()
+			c.linkLost = true
+			ro := c.readOnly
+			c.mu.Unlock()
+			msg := "Link closed by the far end"
+			if ro {
+				msg += " (read-only link)"
+			}
+			c.setState(protocol.StateError, msg)
 			continue
 		}
 		// Count and occasionally log keepalives; log everything else.
@@ -354,6 +399,26 @@ func (c *Client) keepaliveLoop() {
 				return
 			}
 			conn.WriteToUDP(buildKeepalive(), c.remoteAddr) //nolint:errcheck
+			c.checkLinkTimeout(time.Now())
 		}
 	}
+}
+
+// checkLinkTimeout reports the link as lost once nothing has arrived for linkTimeout.
+func (c *Client) checkLinkTimeout(now time.Time) {
+	c.mu.Lock()
+	if c.linkLost || now.Sub(c.lastRX) < linkTimeout {
+		c.mu.Unlock()
+		return
+	}
+	c.linkLost = true
+	ro := c.readOnly
+	host := c.cfg.Host
+	c.mu.Unlock()
+	msg := fmt.Sprintf("Link lost: no traffic from %s for %s", host, linkTimeout)
+	if ro {
+		msg += " (read-only link; the gateway likely dropped you for transmitting)"
+	}
+	log.Printf("dplus: %s", msg)
+	c.setState(protocol.StateError, msg)
 }
