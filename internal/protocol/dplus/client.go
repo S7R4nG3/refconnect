@@ -136,6 +136,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 
 	// Step 1: send CT_LINK1 and wait for server echo.
+	ensureAuthenticated(cfg.MyCall)
 	link1 := buildLink1Packet(true)
 	log.Printf("dplus: sending CT_LINK1 to %s:%d:\n%s", cfg.Host, cfg.Port, hex.Dump(link1))
 	if _, err := conn.WriteToUDP(link1, addr); err != nil {
@@ -146,7 +147,9 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	}
 
 	// Step 2: send CT_LINK2 login packet and wait for OKRW/OKRO or BUSY ACK.
-	loginPkt := buildLoginPacket(cfg.MyCall)
+	// Send the bare callsign: G2 gateways answer "KR4GCQ D" with OKRO
+	// (read-only) but "KR4GCQ" with OKRW.
+	loginPkt := buildLoginPacket(baseCallsign(cfg.MyCall))
 	log.Printf("dplus: sending CT_LINK2 login to %s:%d:\n%s", cfg.Host, cfg.Port, hex.Dump(loginPkt))
 	if _, err := conn.WriteToUDP(loginPkt, addr); err != nil {
 		return fail("CT_LINK2 send: "+err.Error(), err)

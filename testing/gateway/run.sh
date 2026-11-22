@@ -27,4 +27,4 @@ if [ -z "$(docker ps -q -f name="^$NAME\$")" ]; then
   exit 1
 fi
 cd ../..
-go test -tags gateway -race -run "${RUN:-Gateway}" -count=1 -v ./internal/router
+REFCONNECT_DPLUS_AUTH=off go test -tags gateway -race -run "${RUN:-Gateway}" -count=1 -v ./internal/router

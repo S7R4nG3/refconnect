@@ -167,12 +167,18 @@ func (rt *Router) SendBeacon(dprsSentence string) (dstar.DVHeader, error) {
 
 // linkRepeaters returns the RPT1/RPT2 the link target accepts:
 //   - reflector, or repeater over DCS: MyCall / target+module ("KR4GCQ D" / "REF001 C")
-//   - repeater over DPlus/DExtra: target+module / target+'G' ("W4ABC  B" / "W4ABC  G")
+//   - repeater over DExtra: target+module / target+'G' ("W4ABC  B" / "W4ABC  G")
+//   - repeater over DPlus: target+module in both ("W4ABC  B" / "W4ABC  B"). DPlus
+//     (AA4RC, on Icom G2 gateways) routes link traffic by RPT2 and logged
+//     "W4ABC  G" as TX on G; ircDDBGateway and QnetGateway key on RPT1.
 //
 // RPT1 = MyCall keeps the suffix sent in the connect packet; XRF reflectors
 // drop headers where they differ.
 func (rt *Router) linkRepeaters() (rpt1, rpt2 string) {
 	target := withModule(rt.cfg.ReflectorCall, rt.cfg.ReflectorModule)
+	if rt.cfg.Repeater && rt.cfg.Protocol == protocol.ProtoDPlus {
+		return target, target
+	}
 	if rt.cfg.Repeater && rt.cfg.Protocol != protocol.ProtoDCS {
 		return target, withModule(rt.cfg.ReflectorCall, 'G')
 	}

@@ -331,7 +331,7 @@ func TestRewriteHeaderForLinkTarget(t *testing.T) {
 		{"reflector", Config{ReflectorCall: "REF001", ReflectorModule: 'C', Protocol: protocol.ProtoDPlus},
 			"KR4GCQ D", "REF001 C"},
 		{"repeater DPlus", Config{ReflectorCall: "W4ABC", ReflectorModule: 'B', Repeater: true, Protocol: protocol.ProtoDPlus},
-			"W4ABC  B", "W4ABC  G"},
+			"W4ABC  B", "W4ABC  B"},
 		{"repeater DExtra", Config{ReflectorCall: "W4ABC", ReflectorModule: 'B', Repeater: true, Protocol: protocol.ProtoDExtra},
 			"W4ABC  B", "W4ABC  G"},
 		{"repeater DCS", Config{ReflectorCall: "W4ABC", ReflectorModule: 'B', Repeater: true, Protocol: protocol.ProtoDCS},
