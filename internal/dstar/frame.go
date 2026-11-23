@@ -14,6 +14,10 @@ type DVHeader struct {
 	YourCall    string // 8-char destination ("CQCQCQ  " for CQ)
 	MyCall      string // 8-char source callsign
 	MyCallSuffix string // 4-char suffix appended to MyCall
+
+	// StreamID identifies the network stream an RX header arrived on; 0 when
+	// unknown (e.g. headers from the radio). Not part of the wire header.
+	StreamID uint16
 }
 
 // DVFrame is a single 12-byte D-STAR DV voice frame.
@@ -23,6 +27,11 @@ type DVFrame struct {
 	AMBE     [9]byte  // 72-bit AMBE+2 voice payload
 	SlowData [3]byte  // 3 bytes of slow-data (see slowdata.go)
 	End      bool     // true if this is the last frame of the transmission
+
+	// StreamID identifies the network stream an RX frame arrived on; 0 when
+	// unknown. It lets the router tell a stalled stream resuming from a new
+	// one whose header was lost.
+	StreamID uint16
 }
 
 // HeaderBytes is the wire size of an encoded D-STAR DV header (including CRC).

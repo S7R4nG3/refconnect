@@ -230,6 +230,7 @@ func (c *Client) rxLoop() {
 			if dup {
 				continue
 			}
+			hdr.StreamID = sid
 			select {
 			case c.hdrCh <- *hdr:
 			default:
@@ -237,6 +238,9 @@ func (c *Client) rxLoop() {
 			}
 		}
 		if frm != nil {
+			if n >= 14 {
+				frm.StreamID = binary.LittleEndian.Uint16(buf[12:14])
+			}
 			if frm.End {
 				c.mu.Lock()
 				c.rxStreamActive = false

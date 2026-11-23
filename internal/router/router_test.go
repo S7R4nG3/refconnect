@@ -18,6 +18,7 @@ type fakeRadio struct {
 	mu      sync.Mutex
 	open    bool
 	sendErr error // returned by SendHeader/SendFrame
+	headers int   // SendHeader calls
 	hdrCh   chan dstar.DVHeader
 	frmCh   chan dstar.DVFrame
 }
@@ -32,6 +33,7 @@ func (r *fakeRadio) IsOpen() bool            { r.mu.Lock(); defer r.mu.Unlock();
 func (r *fakeRadio) SendHeader(dstar.DVHeader) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.headers++
 	return r.sendErr
 }
 func (r *fakeRadio) SendFrame(dstar.DVFrame) error {
@@ -42,6 +44,8 @@ func (r *fakeRadio) SendFrame(dstar.DVFrame) error {
 func (r *fakeRadio) RxHeaders() <-chan dstar.DVHeader { return r.hdrCh }
 func (r *fakeRadio) RxFrames() <-chan dstar.DVFrame   { return r.frmCh }
 func (r *fakeRadio) PTT(bool) error                   { return nil }
+
+func (r *fakeRadio) headerCount() int { r.mu.Lock(); defer r.mu.Unlock(); return r.headers }
 
 func (r *fakeRadio) setSendErr(err error) { r.mu.Lock(); r.sendErr = err; r.mu.Unlock() }
 
@@ -178,6 +182,68 @@ func TestRXStreamWithoutEndDoesNotCarryHeaderOver(t *testing.T) {
 	ref.frmCh <- dstar.DVFrame{} // a new, headerless stream
 	if e := nextRX(t, rt); e.Delivered || e.Note == "" {
 		t.Fatalf("new headerless stream: Delivered=%v Note=%q, want undelivered with note", e.Delivered, e.Note)
+	}
+}
+
+func TestRXStalledStreamResendsHeader(t *testing.T) {
+	gap := rxStreamGap
+	rxStreamGap = 50 * time.Millisecond
+	t.Cleanup(func() { rxStreamGap = gap })
+	rt, rad, ref := startRouter(t)
+
+	hdr := testHeader
+	hdr.StreamID = 0x8139
+	ref.hdrCh <- hdr
+	nextRX(t, rt)
+	ref.frmCh <- dstar.DVFrame{Seq: 0, StreamID: 0x8139}
+	nextRX(t, rt)
+
+	time.Sleep(2 * rxStreamGap) // the stream stalls, then resumes
+	ref.frmCh <- dstar.DVFrame{Seq: 1, StreamID: 0x8139}
+	e := nextRX(t, rt)
+	if !e.Delivered || !strings.Contains(e.Note, "paused") {
+		t.Fatalf("resumed frame: Delivered=%v Note=%q, want delivered with a pause note", e.Delivered, e.Note)
+	}
+	if n := rad.headerCount(); n != 2 {
+		t.Fatalf("radio got %d headers, want 2 (original + re-send)", n)
+	}
+	ref.frmCh <- dstar.DVFrame{Seq: 2, StreamID: 0x8139, End: true}
+	if e := nextRX(t, rt); !e.Delivered || e.Note != "" {
+		t.Fatalf("next frame: Delivered=%v Note=%q, want delivered, no note", e.Delivered, e.Note)
+	}
+
+	// After End, the same stream ID is not resumed.
+	time.Sleep(2 * rxStreamGap)
+	ref.frmCh <- dstar.DVFrame{StreamID: 0x8139}
+	if e := nextRX(t, rt); e.Delivered || e.Note != noteNoHeader {
+		t.Fatalf("frame after End: Delivered=%v Note=%q, want undelivered with no-header note", e.Delivered, e.Note)
+	}
+	if n := rad.headerCount(); n != 2 {
+		t.Fatalf("radio got %d headers, want 2", n)
+	}
+}
+
+func TestRXNewStreamWithoutHeaderIsNotDelivered(t *testing.T) {
+	rt, rad, ref := startRouter(t)
+
+	hdr := testHeader
+	hdr.StreamID = 0x1111
+	ref.hdrCh <- hdr
+	nextRX(t, rt)
+	ref.frmCh <- dstar.DVFrame{StreamID: 0x1111}
+	nextRX(t, rt)
+
+	// A different stream with no gap and no header of its own.
+	ref.frmCh <- dstar.DVFrame{StreamID: 0x2222}
+	if e := nextRX(t, rt); e.Delivered || e.Note != noteNoHeader {
+		t.Fatalf("other stream's frame: Delivered=%v Note=%q, want undelivered with no-header note", e.Delivered, e.Note)
+	}
+	ref.frmCh <- dstar.DVFrame{StreamID: 0x2222}
+	if e := nextRX(t, rt); e.Delivered || e.Note != "" {
+		t.Fatalf("its next frame: Delivered=%v Note=%q, want undelivered, no repeat note", e.Delivered, e.Note)
+	}
+	if n := rad.headerCount(); n != 1 {
+		t.Fatalf("radio got %d headers, want 1", n)
 	}
 }
 

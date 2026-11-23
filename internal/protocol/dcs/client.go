@@ -293,6 +293,7 @@ func (c *Client) rxLoop() {
 			}
 			c.mu.Unlock()
 			if !dup {
+				hdr.StreamID = sid
 				select {
 				case c.hdrCh <- *hdr:
 				default:
@@ -301,6 +302,7 @@ func (c *Client) rxLoop() {
 			}
 		}
 		if frm != nil {
+			frm.StreamID = sid
 			if frm.End {
 				c.mu.Lock()
 				c.rxStreamActive = false
