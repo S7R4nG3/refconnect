@@ -141,3 +141,39 @@ func TestRXStreamIDIsPassedOn(t *testing.T) {
 		t.Fatal("no frame")
 	}
 }
+
+// A gateway that still has us linked streams its traffic ahead of the login
+// ACK (seen on W4FJ); the voice packets must not be read as the ACK.
+func TestConnectSkipsTrafficBeforeLoginAck(t *testing.T) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	go func() {
+		buf := make([]byte, 64)
+		voice := encodeVoice([2]byte{0xFD, 0x6A}, dstar.DVFrame{Seq: 5})
+		for {
+			n, from, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			switch n {
+			case 5:
+				conn.WriteToUDP(buf[:n], from) //nolint:errcheck
+				conn.WriteToUDP(voice, from)   //nolint:errcheck
+			case 28:
+				conn.WriteToUDP(voice, from)                                              //nolint:errcheck
+				conn.WriteToUDP(voice, from)                                              //nolint:errcheck
+				conn.WriteToUDP([]byte{0x08, 0xC0, 0x04, 0x00, 'O', 'K', 'R', 'W'}, from) //nolint:errcheck
+			}
+		}
+	}()
+
+	c := New()
+	port := uint16(conn.LocalAddr().(*net.UDPAddr).Port)
+	if err := c.Connect(protocol.Config{Host: "127.0.0.1", Port: port, Module: 'B', MyCall: "N0CALL  "}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	c.Disconnect() //nolint:errcheck
+}

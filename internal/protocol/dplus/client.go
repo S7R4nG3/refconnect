@@ -112,19 +112,33 @@ func (c *Client) Connect(cfg protocol.Config) error {
 
 	buf := make([]byte, udpReadBuf)
 
-	// readControl reads UDP packets, skipping 3-byte keepalives, until it
-	// receives a packet of at least minLen bytes or the deadline expires.
+	// readControl reads UDP packets, skipping 3-byte keepalives and DSVT
+	// voice/header traffic, until it receives a packet of at least minLen
+	// bytes or the deadline expires. A repeater gateway that still has us
+	// linked from an earlier session (or treats CT_LINK1 as enough) streams
+	// its traffic straight away, ahead of the login ACK.
 	readControl := func(minLen int, desc string) (int, error) {
 		deadline := time.Now().Add(connectTimeout)
+		skipped := 0
 		for {
 			conn.SetReadDeadline(deadline) //nolint:errcheck
 			n, from, err := conn.ReadFromUDP(buf)
 			conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 			if err != nil {
+				if skipped > 0 {
+					return 0, fmt.Errorf("dplus: %s (skipped %d DSVT packets): %w", desc, skipped, err)
+				}
 				return 0, fmt.Errorf("dplus: %s: %w", desc, err)
 			}
 			if n == 3 && buf[0] == 0x03 && buf[1] == 0x60 {
 				log.Printf("dplus: skipping keepalive while waiting for %s", desc)
+				continue
+			}
+			if isDSVT(buf[:n]) {
+				if skipped == 0 {
+					log.Printf("dplus: skipping DSVT traffic (%d bytes) while waiting for %s", n, desc)
+				}
+				skipped++
 				continue
 			}
 			log.Printf("dplus: %s: %d bytes from %s:\n%s", desc, n, from, hex.Dump(buf[:n]))
