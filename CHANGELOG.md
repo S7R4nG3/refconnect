@@ -1,3 +1,16 @@
+## v0.16.0 (2026-11-22)
+
+### Feat
+
+- **repeaters**: link to repeater gateways as well as reflectors
+
+### Fix
+
+- **router**: explain why UR gateway commands don't work over links
+- **dplus**: full-access links and module routing on G2 gateways
+- **dplus**: accept OKRO login and detect lost links
+- **protocol**: accept gateway DCS ACK, avoid Disconnect deadlock
+
 ## v0.15.0 (2026-11-13)
 
 ### Feat
