@@ -63,6 +63,11 @@ type Config struct {
 	// Combined with ReflectorModule to form RPT2 (e.g. "REF001 C").
 	ReflectorCall string
 
+	// Repeater means ReflectorCall is a repeater; with Protocol it picks the
+	// RPT1/RPT2 layout (see linkRepeaters).
+	Repeater bool
+	Protocol protocol.Protocol
+
 	// TXText is a D-STAR slow data text message (up to 20 chars) sent in
 	// each outgoing transmission in place of the radio's own TX message. It
 	// appears as the "User Message" on reflector status pages and ircDDB Last
@@ -156,14 +161,33 @@ func (rt *Router) GPS() *aprs.Cache { return rt.gps }
 func (rt *Router) SendBeacon(dprsSentence string) (dstar.DVHeader, error) {
 	rt.txMu.Lock()
 	defer rt.txMu.Unlock()
-	return beacon.Send(rt.reflector, rt.cfg.MyCall,
-		rt.cfg.MyCall, reflectorRPT2(rt.cfg.ReflectorCall, rt.cfg.ReflectorModule),
-		dprsSentence)
+	rpt1, rpt2 := rt.linkRepeaters()
+	return beacon.Send(rt.reflector, rt.cfg.MyCall, rpt1, rpt2, dprsSentence)
 }
 
-// reflectorRPT2 builds the 8-char RPT2 string from reflector call + module.
-func reflectorRPT2(refl string, mod byte) string {
-	b := []byte(dstar.PadCallsign(refl, 8))
+// linkRepeaters returns the RPT1/RPT2 the link target accepts:
+//   - reflector, or repeater over DCS: MyCall / target+module ("KR4GCQ D" / "REF001 C")
+//   - repeater over DExtra: target+module / target+'G' ("W4ABC  B" / "W4ABC  G")
+//   - repeater over DPlus: target+module in both ("W4ABC  B" / "W4ABC  B"). DPlus
+//     (AA4RC, on Icom G2 gateways) routes link traffic by RPT2 and logged
+//     "W4ABC  G" as TX on G; ircDDBGateway and QnetGateway key on RPT1.
+//
+// RPT1 = MyCall keeps the suffix sent in the connect packet; XRF reflectors
+// drop headers where they differ.
+func (rt *Router) linkRepeaters() (rpt1, rpt2 string) {
+	target := withModule(rt.cfg.ReflectorCall, rt.cfg.ReflectorModule)
+	if rt.cfg.Repeater && rt.cfg.Protocol == protocol.ProtoDPlus {
+		return target, target
+	}
+	if rt.cfg.Repeater && rt.cfg.Protocol != protocol.ProtoDCS {
+		return target, withModule(rt.cfg.ReflectorCall, 'G')
+	}
+	return dstar.PadCallsign(rt.cfg.MyCall, 8), target
+}
+
+// withModule pads call to 8 chars with mod as the 8th ("REF001" + 'C' → "REF001 C").
+func withModule(call string, mod byte) string {
+	b := []byte(dstar.PadCallsign(call, 8))
 	b[7] = mod
 	return string(b)
 }
@@ -201,22 +225,39 @@ func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
 	if rt.cfg.MyCall == "" {
 		return
 	}
-	// RPT1 = local gateway callsign (e.g. "KR4GCQ  " or "KR4GCQ G").
-	// MyCall already encodes the correct 8th-character suffix chosen in the UI;
-	// overriding it here would mismatch the local module sent in the connect packet
-	// and cause XRF reflectors to silently drop the header.
-	hdr.RPT1 = dstar.PadCallsign(rt.cfg.MyCall, 8)
-	// RPT2 = reflector callsign + module (e.g. "REF001 C").
-	// The reflector validates that RPT2 matches its own callsign.
-	rpt2 := []byte(dstar.PadCallsign(rt.cfg.ReflectorCall, 8))
-	rpt2[7] = rt.cfg.ReflectorModule
-	hdr.RPT2 = string(rpt2)
-	// URCALL = "CQCQCQ  " for a general call
+	hdr.RPT1, hdr.RPT2 = rt.linkRepeaters()
+	// URCALL = "CQCQCQ  " for a general call. Gateway commands ("       E"
+	// echo etc.) are replaced too: gateways only run them from their own RF
+	// (see commandNote).
 	hdr.YourCall = dstar.CQCall
 	// Flag1 = 0x00 for a forwarded (not TX-direction) header
 	hdr.Flag1 = 0x00
 	log.Printf("router: rewrite header for reflector: RPT1=%q RPT2=%q URCALL=%q MYCALL=%q",
 		hdr.RPT1, hdr.RPT2, hdr.YourCall, hdr.MyCall)
+}
+
+// isGatewayCommand reports whether urcall is a one-letter gateway command:
+// seven spaces then a letter ("       E").
+func isGatewayCommand(urcall string) bool {
+	if len(urcall) != 8 || urcall[:7] != "       " {
+		return false
+	}
+	c := urcall[7]
+	return c >= 'A' && c <= 'Z'
+}
+
+// commandNote explains, for the activity log, that the radio's UR gateway
+// command was sent as CQCQCQ. Gateways ignore commands arriving over a link
+// (confirmed on DStarGateway and WS4VA's Icom G2 gateway, issue #29), so
+// there is no point passing them through.
+func commandNote(urcall string) string {
+	what := map[byte]string{'E': "echo test", 'I': "info", 'U': "unlink"}[urcall[7]]
+	if what == "" {
+		what = "gateway command"
+	}
+	return "Your radio's UR is set to \"" + urcall + "\" (" + what +
+		"). Gateway commands only work over RF, so it was sent as CQCQCQ. " +
+		"For an echo test, link to an echo module (E) with UR set to CQCQCQ."
 }
 
 // txLoop reads from the radio and forwards to the reflector (TX path).
@@ -252,13 +293,23 @@ func (rt *Router) txLoop() {
 			rt.txDPRS, rt.txDPRSIdx, rt.txDPRSLogged = nil, 0, false
 			rt.txPendingSeq = 0
 			rt.txFrameCount = 0
+			var note string
+			if rt.cfg.MyCall != "" && isGatewayCommand(hdr.YourCall) {
+				note = commandNote(hdr.YourCall)
+				log.Printf("router: radio sent gateway command URCALL=%q; replaced with CQCQCQ", hdr.YourCall)
+			}
 			rt.rewriteHeaderForReflector(&hdr)
 			if err := rt.reflector.SendHeader(hdr); err != nil {
 				rt.emit(Event{Direction: DirTX, Err: err})
 				continue
 			}
 			h := hdr
-			rt.emit(Event{Direction: DirTX, Header: &h})
+			evt := Event{Direction: DirTX, Header: &h, Note: note}
+			if note != "" {
+				rt.emitWait(evt) // don't let a full queue drop the note
+			} else {
+				rt.emit(evt)
+			}
 
 		case frm, ok := <-rt.radio.RxFrames():
 			if !ok {

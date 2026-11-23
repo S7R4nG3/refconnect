@@ -134,9 +134,9 @@ func (c *Client) Connect(cfg protocol.Config) error {
 
 func (c *Client) Disconnect() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.conn == nil {
+		c.mu.Unlock()
 		return nil
 	}
 	pkt := buildDisconnectPacket(c.cfg.MyCall)
@@ -145,7 +145,8 @@ func (c *Client) Disconnect() error {
 	err := c.conn.Close()
 	c.conn = nil
 	c.setState(protocol.StateDisconnected, "Disconnected")
-	// Wait for goroutines to exit before closing channels to avoid send-on-closed panic.
+	// The loops take c.mu, so unlock before waiting for them to exit.
+	c.mu.Unlock()
 	c.wg.Wait()
 	close(c.hdrCh)
 	close(c.frmCh)

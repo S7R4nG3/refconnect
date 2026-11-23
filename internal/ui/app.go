@@ -40,6 +40,8 @@ type App struct {
 	reflector       protocol.Reflector
 	reflectorModule byte   // target module on the reflector (e.g. 'C')
 	reflectorCall   string // reflector D-STAR callsign (e.g. "REF001")
+	repeaterLink    bool   // reflectorCall is a repeater's (e.g. "W4ABC")
+	linkProtocol    protocol.Protocol
 	rt              *router.Router
 	irc             *ircddb.Client
 
@@ -198,6 +200,11 @@ func (a *App) connect(entry config.ReflectorEntry) {
 	a.reflectorModule = entry.Module[0]
 	// Extract reflector callsign from entry name (e.g. "REF001 C" → "REF001").
 	a.reflectorCall = strings.TrimRight(strings.TrimSuffix(entry.Name, " "+entry.Module), " ")
+	a.repeaterLink = entry.RepeaterCall != ""
+	if a.repeaterLink {
+		a.reflectorCall = strings.ToUpper(strings.TrimSpace(entry.RepeaterCall))
+	}
+	a.linkProtocol = protocol.Protocol(entry.Protocol)
 
 	cfg := protocol.Config{
 		Host:     entry.Host,
@@ -205,6 +212,9 @@ func (a *App) connect(entry config.ReflectorEntry) {
 		Module:   entry.Module[0],
 		MyCall:   myCall,
 		Protocol: protocol.Protocol(entry.Protocol),
+	}
+	if a.repeaterLink {
+		cfg.TargetCall = a.reflectorCall
 	}
 
 	a.appendLog(fmt.Sprintf("Connecting to %s (%s:%d module %s) via %s…",
@@ -267,7 +277,7 @@ func (a *App) connect(entry config.ReflectorEntry) {
 // that actually works. This is advisory only — it does not retry.
 func (a *App) suggestXLXOrigin(entry config.ReflectorEntry) {
 	name := strings.ToUpper(strings.TrimSpace(a.reflectorCall))
-	if !strings.HasPrefix(name, "XLX") {
+	if a.repeaterLink || !strings.HasPrefix(name, "XLX") {
 		return
 	}
 
@@ -573,6 +583,8 @@ func (a *App) startRouter() {
 		MyCall:                 myCall,
 		ReflectorModule:        a.reflectorModule,
 		ReflectorCall:          a.reflectorCall,
+		Repeater:               a.repeaterLink,
+		Protocol:               a.linkProtocol,
 		TXText:                 "RefConnect by KR4GCQ",
 		// With APRS enabled, transmissions carry the position as DPRS so the
 		// reflector dashboard shows a map pin, without a separate beacon
@@ -625,7 +637,8 @@ func (a *App) startRouter() {
 					dir := "RX"
 					if evt.Direction == router.DirTX {
 						dir = "TX"
-						if a.irc != nil {
+						// On a repeater link the repeater's gateway announces.
+						if a.irc != nil && !a.repeaterLink {
 							a.irc.AnnounceUser(*evt.Header, "RefConnect by KR4GCQ")
 						}
 					}

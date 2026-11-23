@@ -58,6 +58,10 @@ type ReflectorEntry struct {
 	Port     uint16 `yaml:"port"`
 	Module   string `yaml:"module"`   // single letter "A"–"Z"
 	Protocol string `yaml:"protocol"` // "DExtra", "DPlus", "XLX"
+
+	// RepeaterCall is the repeater's callsign without module (e.g. "W4ABC").
+	// Empty for reflector entries.
+	RepeaterCall string `yaml:"repeater_call,omitempty"`
 }
 
 // UIConfig holds window and display preferences.

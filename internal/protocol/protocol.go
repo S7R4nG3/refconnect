@@ -21,6 +21,10 @@ type Config struct {
 	Module   byte   // 'A'–'Z'
 	MyCall   string // local station callsign (8 chars, space-padded)
 	Protocol Protocol
+
+	// TargetCall is the target's callsign without module (e.g. "W4ABC").
+	// If empty, clients derive it from Host.
+	TargetCall string
 }
 
 // LinkState represents the current state of a reflector link.
