@@ -1,3 +1,9 @@
+## v0.16.1 (2026-11-22)
+
+### Fix
+
+- **router**: re-send the RX header when a reflector stream resumes after a stall
+
 ## v0.16.0 (2026-11-22)
 
 ### Feat
