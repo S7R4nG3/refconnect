@@ -2,6 +2,7 @@ package router
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -350,5 +351,51 @@ func TestRewriteHeaderForLinkTarget(t *testing.T) {
 				t.Errorf("URCALL=%q, want %q", hdr.YourCall, dstar.CQCall)
 			}
 		})
+	}
+}
+
+func TestIsGatewayCommand(t *testing.T) {
+	for in, want := range map[string]bool{
+		"       E": true, "       I": true, "       U": true,
+		"CQCQCQ  ": false, "W1AW    ": false, "REF001CL": false,
+		"       e": false, "      EE": false, "": false,
+	} {
+		if got := isGatewayCommand(in); got != want {
+			t.Errorf("isGatewayCommand(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A radio UR command is sent as CQCQCQ, with a note explaining why.
+func TestTXGatewayCommandNote(t *testing.T) {
+	rt, rad, _ := startRouterWith(t, Config{MyCall: "KR4GCQ D", ReflectorCall: "W4ABC", ReflectorModule: 'B',
+		Repeater: true, Protocol: protocol.ProtoDPlus})
+	rad.hdrCh <- dstar.DVHeader{MyCall: "KR4GCQ  ", YourCall: "       E", RPT1: "DIRECT  ", RPT2: "DIRECT  "}
+	e := nextTXHeader(t, rt)
+	if e.Header.YourCall != dstar.CQCall {
+		t.Errorf("URCALL=%q, want %q", e.Header.YourCall, dstar.CQCall)
+	}
+	if !strings.Contains(e.Note, "echo test") || !strings.Contains(e.Note, "echo module") {
+		t.Errorf("note = %q", e.Note)
+	}
+
+	rad.hdrCh <- dstar.DVHeader{MyCall: "KR4GCQ  ", YourCall: "CQCQCQ  ", RPT1: "DIRECT  ", RPT2: "DIRECT  "}
+	if e := nextTXHeader(t, rt); e.Note != "" {
+		t.Errorf("CQ header got a note: %q", e.Note)
+	}
+}
+
+func nextTXHeader(t *testing.T, rt *Router) Event {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case e := <-rt.Events():
+			if e.Direction == DirTX && e.Header != nil {
+				return e
+			}
+		case <-timeout:
+			t.Fatal("no TX header event")
+		}
 	}
 }

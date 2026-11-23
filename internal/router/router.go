@@ -226,12 +226,38 @@ func (rt *Router) rewriteHeaderForReflector(hdr *dstar.DVHeader) {
 		return
 	}
 	hdr.RPT1, hdr.RPT2 = rt.linkRepeaters()
-	// URCALL = "CQCQCQ  " for a general call
+	// URCALL = "CQCQCQ  " for a general call. Gateway commands ("       E"
+	// echo etc.) are replaced too: gateways only run them from their own RF
+	// (see commandNote).
 	hdr.YourCall = dstar.CQCall
 	// Flag1 = 0x00 for a forwarded (not TX-direction) header
 	hdr.Flag1 = 0x00
 	log.Printf("router: rewrite header for reflector: RPT1=%q RPT2=%q URCALL=%q MYCALL=%q",
 		hdr.RPT1, hdr.RPT2, hdr.YourCall, hdr.MyCall)
+}
+
+// isGatewayCommand reports whether urcall is a one-letter gateway command:
+// seven spaces then a letter ("       E").
+func isGatewayCommand(urcall string) bool {
+	if len(urcall) != 8 || urcall[:7] != "       " {
+		return false
+	}
+	c := urcall[7]
+	return c >= 'A' && c <= 'Z'
+}
+
+// commandNote explains, for the activity log, that the radio's UR gateway
+// command was sent as CQCQCQ. Gateways ignore commands arriving over a link
+// (confirmed on DStarGateway and WS4VA's Icom G2 gateway, issue #29), so
+// there is no point passing them through.
+func commandNote(urcall string) string {
+	what := map[byte]string{'E': "echo test", 'I': "info", 'U': "unlink"}[urcall[7]]
+	if what == "" {
+		what = "gateway command"
+	}
+	return "Your radio's UR is set to \"" + urcall + "\" (" + what +
+		"). Gateway commands only work over RF, so it was sent as CQCQCQ. " +
+		"For an echo test, link to an echo module (E) with UR set to CQCQCQ."
 }
 
 // txLoop reads from the radio and forwards to the reflector (TX path).
@@ -267,13 +293,23 @@ func (rt *Router) txLoop() {
 			rt.txDPRS, rt.txDPRSIdx, rt.txDPRSLogged = nil, 0, false
 			rt.txPendingSeq = 0
 			rt.txFrameCount = 0
+			var note string
+			if rt.cfg.MyCall != "" && isGatewayCommand(hdr.YourCall) {
+				note = commandNote(hdr.YourCall)
+				log.Printf("router: radio sent gateway command URCALL=%q; replaced with CQCQCQ", hdr.YourCall)
+			}
 			rt.rewriteHeaderForReflector(&hdr)
 			if err := rt.reflector.SendHeader(hdr); err != nil {
 				rt.emit(Event{Direction: DirTX, Err: err})
 				continue
 			}
 			h := hdr
-			rt.emit(Event{Direction: DirTX, Header: &h})
+			evt := Event{Direction: DirTX, Header: &h, Note: note}
+			if note != "" {
+				rt.emitWait(evt) // don't let a full queue drop the note
+			} else {
+				rt.emit(evt)
+			}
 
 		case frm, ok := <-rt.radio.RxFrames():
 			if !ok {
