@@ -4,7 +4,9 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,12 +41,17 @@ type Event struct {
 }
 
 // rxStreamGap is the silence after which the next RX voice frame is treated
-// as a new transmission (a stream that ended without an end-of-stream frame).
+// as a new transmission (a stream that ended without an end-of-stream frame),
+// unless its stream ID shows it is the same stream resuming after a stall.
 var rxStreamGap = time.Second
 
 // noteNoHeader is logged once per transmission when reflector voice reaches
 // the radio without a header, e.g. one dropped for a bad CRC.
 const noteNoHeader = "Receiving voice from the reflector without a valid header — the radio may not play it."
+
+// noteStreamResumed is logged when a reflector stream stalls mid-transmission
+// and then resumes; the router re-sends its header so the radio plays the rest.
+const noteStreamResumed = "Reflector audio from %s paused for %.1fs mid-transmission (network delay) — resumed."
 
 // Config controls router behaviour.
 type Config struct {
@@ -115,9 +122,12 @@ type Router struct {
 	gotFixThisTX bool
 
 	// RX transmission state, owned by rxLoop.
-	rxHeaderDelivered bool      // this transmission's header reached the radio
-	rxNoHeaderNoted   bool      // noteNoHeader already sent for this transmission
-	rxLastFrame       time.Time // when the last RX header or frame arrived
+	rxHeaderDelivered bool           // this transmission's header reached the radio
+	rxNoHeaderNoted   bool           // noteNoHeader already sent for this transmission
+	rxLastFrame       time.Time      // when the last RX header or frame arrived
+	rxHeader          dstar.DVHeader // this transmission's header, for re-sending
+	rxStreamOpen      bool           // rxHeader's stream has had no End frame yet
+	rxStreamID        uint16         // network stream of this transmission; 0 = unknown
 
 	// TX slow-data state for the current transmission, owned by txLoop (see
 	// txSlowData).
@@ -534,6 +544,9 @@ func (rt *Router) rxLoop() {
 			rt.rxHeaderDelivered = delivered
 			rt.rxNoHeaderNoted = false
 			rt.rxLastFrame = time.Now()
+			rt.rxHeader = hdr
+			rt.rxStreamOpen = true
+			rt.rxStreamID = hdr.StreamID
 			h := hdr
 			rt.emit(Event{Direction: DirRX, Header: &h, Delivered: delivered})
 
@@ -541,16 +554,31 @@ func (rt *Router) rxLoop() {
 			if !ok {
 				return
 			}
-			if time.Since(rt.rxLastFrame) > rxStreamGap {
+			var note string
+			gap := time.Since(rt.rxLastFrame)
+			sameStream := rt.rxStreamOpen && frm.StreamID != 0 && frm.StreamID == rt.rxStreamID
+			otherStream := frm.StreamID != 0 && rt.rxStreamID != 0 && frm.StreamID != rt.rxStreamID
+			switch {
+			case sameStream && gap > rxStreamGap:
+				// The stream stalled and resumed. The radio has likely
+				// closed RX in the gap, so give it the header again.
+				log.Printf("router: RX stream %04X resumed after %v gap — re-sending header", frm.StreamID, gap.Round(time.Millisecond))
+				hdr := rt.rxHeader
+				rt.rxHeaderDelivered = rt.deliverRX(func() error { return rt.radio.SendHeader(hdr) })
+				note = fmt.Sprintf(noteStreamResumed, strings.TrimSpace(hdr.MyCall), gap.Seconds())
+			case sameStream:
+			case gap > rxStreamGap, otherStream:
 				// A new transmission whose header never arrived.
 				rt.rxHeaderDelivered = false
 				rt.rxNoHeaderNoted = false
+				rt.rxStreamOpen = false
+				rt.rxStreamID = frm.StreamID
 			}
 			rt.rxLastFrame = time.Now()
 
 			sent := rt.deliverRX(func() error { return rt.radio.SendFrame(frm) })
 			f := frm
-			evt := Event{Direction: DirRX, Frame: &f, Delivered: sent && rt.rxHeaderDelivered}
+			evt := Event{Direction: DirRX, Frame: &f, Delivered: sent && rt.rxHeaderDelivered, Note: note}
 			if sent && !rt.rxHeaderDelivered && !rt.rxNoHeaderNoted {
 				rt.rxNoHeaderNoted = true
 				log.Printf("router: RX voice reaching radio without a delivered header")
@@ -559,6 +587,7 @@ func (rt *Router) rxLoop() {
 			if frm.End {
 				rt.rxHeaderDelivered = false
 				rt.rxNoHeaderNoted = false
+				rt.rxStreamOpen = false
 			}
 			if evt.Note != "" {
 				rt.emitWait(evt) // don't let a full queue drop the note

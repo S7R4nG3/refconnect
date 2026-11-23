@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/S7R4nG3/refconnect/internal/dstar"
 	"github.com/S7R4nG3/refconnect/internal/protocol"
 )
 
@@ -86,5 +87,57 @@ func TestCheckLinkTimeout(t *testing.T) {
 	case ev := <-c.Events():
 		t.Fatalf("duplicate event: %+v", ev)
 	default:
+	}
+}
+
+func TestRXStreamIDIsPassedOn(t *testing.T) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	sid := [2]byte{0x81, 0x39}
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, from, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			switch n {
+			case 5:
+				conn.WriteToUDP(buf[:n], from) //nolint:errcheck
+			case 28:
+				conn.WriteToUDP([]byte{0x08, 0xC0, 0x04, 0x00, 'O', 'K', 'R', 'W'}, from) //nolint:errcheck
+				hdr, _ := encodeHeader(sid, dstar.DVHeader{MyCall: "M7GSV   ", YourCall: "CQCQCQ  ", RPT1: "M7GSV  B", RPT2: "W4FJ   B"})
+				conn.WriteToUDP(hdr, from)                                     //nolint:errcheck
+				conn.WriteToUDP(encodeVoice(sid, dstar.DVFrame{Seq: 3}), from) //nolint:errcheck
+			}
+		}
+	}()
+
+	c := New()
+	port := uint16(conn.LocalAddr().(*net.UDPAddr).Port)
+	if err := c.Connect(protocol.Config{Host: "127.0.0.1", Port: port, Module: 'B', MyCall: "N0CALL  "}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Disconnect() //nolint:errcheck
+
+	const want = 0x8139
+	select {
+	case h := <-c.RxHeaders():
+		if h.StreamID != want {
+			t.Fatalf("header StreamID = %04X, want %04X", h.StreamID, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no header")
+	}
+	select {
+	case f := <-c.RxFrames():
+		if f.StreamID != want {
+			t.Fatalf("frame StreamID = %04X, want %04X", f.StreamID, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no frame")
 	}
 }

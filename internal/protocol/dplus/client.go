@@ -1,6 +1,7 @@
 package dplus
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -366,6 +367,7 @@ func (c *Client) rxLoop() {
 			if dup {
 				continue // suppress duplicate header
 			}
+			hdr.StreamID = binary.BigEndian.Uint16(sid[:])
 			select {
 			case c.hdrCh <- *hdr:
 			default:
@@ -373,6 +375,9 @@ func (c *Client) rxLoop() {
 			}
 		}
 		if frm != nil {
+			if n >= 16 {
+				frm.StreamID = binary.BigEndian.Uint16(buf[14:16])
+			}
 			if frm.End {
 				c.mu.Lock()
 				c.rxStreamActive = false
