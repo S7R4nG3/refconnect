@@ -128,6 +128,10 @@ type Router struct {
 	rxHeader          dstar.DVHeader // this transmission's header, for re-sending
 	rxStreamOpen      bool           // rxHeader's stream has had no End frame yet
 	rxStreamID        uint16         // network stream of this transmission; 0 = unknown
+	// rxOffModule holds streams whose header named another module of the
+	// linked reflector or repeater, with when each was last heard; their voice is
+	// dropped (see offModule).
+	rxOffModule map[uint16]time.Time
 
 	// TX slow-data state for the current transmission, owned by txLoop (see
 	// txSlowData).
@@ -152,6 +156,8 @@ func New(r radio.RadioInterface, ref protocol.Reflector, cfg Config) *Router {
 		eventCh:   make(chan Event, 16),
 		stopCh:    make(chan struct{}),
 		gps:       &aprs.Cache{},
+
+		rxOffModule: make(map[uint16]time.Time),
 	}
 	if cfg.TXText != "" {
 		rt.txText = dstar.TextMessageBlocks(cfg.TXText)
@@ -538,6 +544,21 @@ func (rt *Router) rxLoop() {
 			if !ok {
 				return
 			}
+			if mod, off := rt.offModule(hdr); off {
+				log.Printf("router: RX header for module %c, not %c — dropping stream %04X: MYCALL=%q RPT1=%q RPT2=%q",
+					mod, rt.cfg.ReflectorModule, hdr.StreamID, hdr.MyCall, hdr.RPT1, hdr.RPT2)
+				if hdr.StreamID != 0 {
+					now := time.Now()
+					for id, seen := range rt.rxOffModule {
+						if now.Sub(seen) > offModuleExpiry {
+							delete(rt.rxOffModule, id)
+						}
+					}
+					rt.rxOffModule[hdr.StreamID] = now
+				}
+				continue
+			}
+			delete(rt.rxOffModule, hdr.StreamID)
 			log.Printf("router: RX header from reflector: MYCALL=%q URCALL=%q RPT1=%q RPT2=%q",
 				hdr.MyCall, hdr.YourCall, hdr.RPT1, hdr.RPT2)
 			delivered := rt.deliverRX(func() error { return rt.radio.SendHeader(hdr) })
@@ -553,6 +574,14 @@ func (rt *Router) rxLoop() {
 		case frm, ok := <-rt.reflector.RxFrames():
 			if !ok {
 				return
+			}
+			if _, off := rt.rxOffModule[frm.StreamID]; off && frm.StreamID != 0 {
+				if frm.End {
+					delete(rt.rxOffModule, frm.StreamID)
+				} else {
+					rt.rxOffModule[frm.StreamID] = time.Now()
+				}
+				continue
 			}
 			var note string
 			gap := time.Since(rt.rxLastFrame)
@@ -596,6 +625,49 @@ func (rt *Router) rxLoop() {
 			}
 		}
 	}
+}
+
+// offModuleExpiry: a dropped off-module stream not heard from for this long
+// is forgotten.
+const offModuleExpiry = 5 * time.Second
+
+// offModule reports whether an RX header belongs to a module of the linked
+// reflector or repeater other than ours, and which. A REF reflector or a
+// repeater gateway sends a DPlus link every module's traffic (its login
+// names no module), tagging each stream's module in RPT2 ("REF001 B",
+// "W4FJ   B") or, with RPT2 "<call>  G", in RPT1 ("W4NYR  C"). Only a header
+// that names our target with a different module is off-module: 'G' (a
+// gateway suffix) and headers naming other callsigns say nothing about the
+// module, so they pass.
+func (rt *Router) offModule(hdr dstar.DVHeader) (byte, bool) {
+	if rt.cfg.ReflectorCall == "" || rt.cfg.ReflectorModule == 0 {
+		return 0, false
+	}
+	want := rt.cfg.ReflectorModule
+	moduleOf := func(call string) byte {
+		if len(call) != 8 {
+			return 0
+		}
+		if !strings.EqualFold(strings.TrimRight(call[:7], " "), rt.cfg.ReflectorCall) {
+			return 0
+		}
+		m := call[7]
+		if m < 'A' || m > 'Z' || (m == 'G' && want != 'G') {
+			return 0
+		}
+		return m
+	}
+	m2, m1 := moduleOf(hdr.RPT2), moduleOf(hdr.RPT1)
+	if m2 == want || m1 == want {
+		return 0, false
+	}
+	if m2 != 0 {
+		return m2, true
+	}
+	if m1 != 0 {
+		return m1, true
+	}
+	return 0, false
 }
 
 // deliverRX sends to the radio if it is open, reporting whether the write

@@ -177,3 +177,67 @@ func TestConnectSkipsTrafficBeforeLoginAck(t *testing.T) {
 	}
 	c.Disconnect() //nolint:errcheck
 }
+
+// Two interleaved streams (a REF reflector sends a dongle link every
+// module's traffic) must each have their header forwarded once, not on every
+// repeat.
+func TestRXInterleavedStreamHeadersForwardedOnce(t *testing.T) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	a, b := [2]byte{0xAA, 0x01}, [2]byte{0xBB, 0x02}
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, from, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			switch n {
+			case 5:
+				conn.WriteToUDP(buf[:n], from) //nolint:errcheck
+			case 28:
+				conn.WriteToUDP([]byte{0x08, 0xC0, 0x04, 0x00, 'O', 'K', 'R', 'W'}, from) //nolint:errcheck
+				ha, _ := encodeHeader(a, dstar.DVHeader{MyCall: "N1GMV   ", YourCall: "CQCQCQ  ", RPT1: "N1GMV  D", RPT2: "REF054 A"})
+				hb, _ := encodeHeader(b, dstar.DVHeader{MyCall: "N4NNX  Z", YourCall: "CQCQCQ  ", RPT1: "N4NNX  Z", RPT2: "REF054 C"})
+				for i := 0; i < 3; i++ {
+					conn.WriteToUDP(ha, from) //nolint:errcheck
+					conn.WriteToUDP(hb, from) //nolint:errcheck
+				}
+				conn.WriteToUDP(encodeVoice(a, dstar.DVFrame{Seq: 1, End: true}), from) //nolint:errcheck
+				conn.WriteToUDP(ha, from)                                               //nolint:errcheck
+			}
+		}
+	}()
+
+	c := New()
+	port := uint16(conn.LocalAddr().(*net.UDPAddr).Port)
+	if err := c.Connect(protocol.Config{Host: "127.0.0.1", Port: port, Module: 'C', MyCall: "N0CALL  "}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer c.Disconnect() //nolint:errcheck
+
+	// A, B, then A again once A's End frame closed it.
+	var got []uint16
+	timeout := time.After(time.Second)
+	for {
+		select {
+		case h := <-c.RxHeaders():
+			got = append(got, h.StreamID)
+			continue
+		case <-timeout:
+		}
+		break
+	}
+	want := []uint16{0xAA01, 0xBB02, 0xAA01}
+	if len(got) != len(want) {
+		t.Fatalf("headers forwarded for streams %04X, want %04X", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("headers forwarded for streams %04X, want %04X", got, want)
+		}
+	}
+}

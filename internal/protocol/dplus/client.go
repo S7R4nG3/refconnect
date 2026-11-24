@@ -26,6 +26,9 @@ const (
 	// is gone (gateways and reflectors send keepalives every few seconds).
 	linkTimeout = 30 * time.Second
 	udpReadBuf        = 4096
+	// rxStreamExpiry: an inbound stream not heard from for this long is
+	// forgotten, so a later header with its ID is forwarded again.
+	rxStreamExpiry = 5 * time.Second
 )
 
 // Client implements protocol.Reflector for DPlus (REF reflectors) over UDP port 20001.
@@ -44,8 +47,10 @@ type Client struct {
 	wg               sync.WaitGroup // tracks rxLoop + keepaliveLoop
 	streamID         [2]byte
 	rxKeepaliveCount int
-	rxStreamID       [2]byte // current inbound stream ID for dedup
-	rxStreamActive   bool
+	// rxStreams holds the inbound streams whose header has been forwarded,
+	// with when each was last heard, for header dedup. A REF reflector
+	// sends a dongle link every module's traffic, so streams interleave.
+	rxStreams        map[[2]byte]time.Time
 	lastRX           time.Time
 	linkLost         bool
 	readOnly         bool // login answered OKRO
@@ -101,6 +106,7 @@ func (c *Client) Connect(cfg protocol.Config) error {
 	c.cfg = cfg
 	c.stopCh = make(chan struct{})
 	c.streamID = nextStreamID()
+	c.rxStreams = nil
 	c.setState(protocol.StateConnecting, fmt.Sprintf("Connecting to %s:%d module %c", cfg.Host, cfg.Port, cfg.Module))
 
 	fail := func(msg string, err error) error {
@@ -365,11 +371,19 @@ func (c *Client) rxLoop() {
 			if n >= 16 {
 				copy(sid[:], buf[14:16])
 			}
+			now := time.Now()
 			c.mu.Lock()
-			dup := c.rxStreamActive && sid == c.rxStreamID
+			if c.rxStreams == nil {
+				c.rxStreams = make(map[[2]byte]time.Time)
+			}
+			for id, seen := range c.rxStreams {
+				if now.Sub(seen) > rxStreamExpiry {
+					delete(c.rxStreams, id)
+				}
+			}
+			_, dup := c.rxStreams[sid]
+			c.rxStreams[sid] = now
 			if !dup {
-				c.rxStreamID = sid
-				c.rxStreamActive = true
 				log.Printf("dplus: new RX stream %02X — forwarding header", sid)
 				if crcErr != nil {
 					// Logged once per stream; the reflector repeats the header.
@@ -390,11 +404,15 @@ func (c *Client) rxLoop() {
 		}
 		if frm != nil {
 			if n >= 16 {
-				frm.StreamID = binary.BigEndian.Uint16(buf[14:16])
-			}
-			if frm.End {
+				var sid [2]byte
+				copy(sid[:], buf[14:16])
+				frm.StreamID = binary.BigEndian.Uint16(sid[:])
 				c.mu.Lock()
-				c.rxStreamActive = false
+				if frm.End {
+					delete(c.rxStreams, sid)
+				} else if _, ok := c.rxStreams[sid]; ok {
+					c.rxStreams[sid] = time.Now()
+				}
 				c.mu.Unlock()
 			}
 			select {

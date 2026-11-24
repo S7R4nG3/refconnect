@@ -465,3 +465,62 @@ func nextTXHeader(t *testing.T, rt *Router) Event {
 		}
 	}
 }
+
+// A REF reflector sends a DPlus link every module's traffic; only the linked
+// module's streams reach the radio.
+func TestRXOtherModuleStreamIsDropped(t *testing.T) {
+	rt, rad, ref := startRouterWith(t, Config{ReflectorCall: "REF001", ReflectorModule: 'C'})
+
+	off := testHeader
+	off.RPT2, off.StreamID = "REF001 B", 0xB0B0
+	ref.hdrCh <- off
+	ref.frmCh <- dstar.DVFrame{StreamID: 0xB0B0}
+
+	on := testHeader
+	on.StreamID = 0xC0C0
+	ref.hdrCh <- on
+	if e := nextRX(t, rt); e.Header == nil || e.Header.StreamID != 0xC0C0 {
+		t.Fatalf("first RX event = %+v, want module C header", e)
+	}
+	// Interleaved off-module voice, through to its End frame.
+	for _, f := range []dstar.DVFrame{{StreamID: 0xB0B0}, {StreamID: 0xC0C0}, {StreamID: 0xB0B0, End: true}, {StreamID: 0xC0C0}} {
+		ref.frmCh <- f
+		if f.StreamID != 0xC0C0 {
+			continue
+		}
+		if e := nextRX(t, rt); e.Frame == nil || e.Frame.StreamID != 0xC0C0 || !e.Delivered || e.Note != "" {
+			t.Fatalf("next RX event = %+v, want delivered module C frame", e)
+		}
+	}
+	if n := rad.headerCount(); n != 1 {
+		t.Fatalf("radio got %d headers, want 1", n)
+	}
+}
+
+func TestOffModule(t *testing.T) {
+	refl := &Router{cfg: Config{ReflectorCall: "REF001", ReflectorModule: 'C'}}
+	rptr := &Router{cfg: Config{ReflectorCall: "W4NYR", ReflectorModule: 'C', Repeater: true}}
+	for _, tc := range []struct {
+		rt         *Router
+		rpt1, rpt2 string
+		want       bool
+	}{
+		{refl, "K3NF   B", "REF001 C", false},
+		{refl, "K3NF   B", "REF001 B", true},
+		{refl, "K3NF   B", "REF001 D", true},
+		{refl, "REF001 C", "REF001 G", false}, // G is a gateway suffix
+		{refl, "REF001 A", "REF001 G", true},
+		{refl, "K3NF   B", "REF054 B", false}, // another reflector: no opinion
+		{refl, "K3NF   B", "", false},
+		{rptr, "K3NF   B", "W4NYR  C", false},
+		{rptr, "K3NF   B", "W4NYR  B", true},
+		{rptr, "W4NYR  C", "W4NYR  G", false},
+		{rptr, "W4NYR  A", "W4NYR  G", true},
+		{rptr, "WD4MSM D", "W4FJ   B", false}, // another repeater: no opinion
+	} {
+		_, got := tc.rt.offModule(dstar.DVHeader{RPT1: tc.rpt1, RPT2: tc.rpt2})
+		if got != tc.want {
+			t.Errorf("offModule(RPT1=%q RPT2=%q, repeater=%v) = %v, want %v", tc.rpt1, tc.rpt2, tc.rt.cfg.Repeater, got, tc.want)
+		}
+	}
+}
