@@ -388,6 +388,40 @@ func TestTXReplacesRadioTextKeepsRadioGPS(t *testing.T) {
 	}
 }
 
+// With APRS off, a radio sending its own GPS must not put the position on the
+// air: its GPS blocks become filler, while its text is still replaced by ours.
+// The radio's fix is still decoded into the GPS cache.
+func TestTXHidePositionStripsRadioGPS(t *testing.T) {
+	rt, rad, ref := startRouterWith(t, Config{
+		TXText:       "RefConnect by KR4GCQ",
+		DPRS:         func() (string, bool) { return testTNC2, true },
+		HidePosition: func() bool { return true },
+	})
+	radioDPRS := aprs.WrapDPRS("KR4GCQ>API705,DSTAR*:!3513.91N/08051.26W[/")
+	radioText := dstar.TextMessageBlocks("Dave - CLT, NC")
+	var blocks [][6]byte
+	for i, g := range dstar.DPRSBlocks(radioDPRS) {
+		blocks = append(blocks, radioText[i%4], g)
+	}
+	out := transmit(t, rad, ref, radioStream(4*(dstar.MaxSeq+1), blocks))
+
+	text, dprs := decodeSlowData(out)
+	if text != "RefConnect by KR4GCQ" {
+		t.Errorf("text message = %q, want ours", text)
+	}
+	if len(dprs) != 0 {
+		t.Errorf("DPRS = %q, want none with the position hidden", dprs)
+	}
+	for i, f := range out {
+		if f.Seq%2 == 1 && dstar.ScrambleSlowData(f.SlowData, f.Seq)[0]&0xF0 == dstar.BlockTypeGPS {
+			t.Fatalf("frame %d carries a GPS block", i)
+		}
+	}
+	if _, _, ok := rt.GPS().Get(); !ok {
+		t.Error("radio's GPS fix was not cached")
+	}
+}
+
 // The far end drops headers that don't name it the way it routes them.
 func TestRewriteHeaderForLinkTarget(t *testing.T) {
 	cases := []struct {

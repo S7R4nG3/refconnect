@@ -596,6 +596,12 @@ func (a *App) startRouter() {
 			tnc2, _, _, ok := a.aprsPacket(rt.GPS())
 			return tnc2, ok
 		},
+		// With APRS disabled, no position leaves the station, including
+		// the radio's own GPS (an IC-705 with GPS TX on embeds it).
+		HidePosition: func() bool {
+			on, _ := a.aprsEnabled.Get()
+			return !on
+		},
 	})
 	a.rt = rt
 	rt.Start()

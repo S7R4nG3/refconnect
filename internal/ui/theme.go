@@ -57,3 +57,47 @@ func (*refconnectTheme) Icon(n fyne.ThemeIconName) fyne.Resource {
 func (*refconnectTheme) Size(n fyne.ThemeSizeName) float32 {
 	return theme.DefaultTheme().Size(n)
 }
+
+// readableDisabledTheme brightens the disabled text color, for widgets whose
+// text must stay readable while locked: the radio port dropdown (disabled
+// while connected) and the hint below it (LowImportance, which Fyne draws in
+// the disabled color). The stock disabled color is nearly invisible in dark
+// mode. Everything else comes from the app theme, so the light/dark toggle
+// still applies. Use with container.NewThemeOverride.
+type readableDisabledTheme struct{}
+
+var _ fyne.Theme = readableDisabledTheme{}
+
+// readableDisabledMix is how far the disabled color moves toward the
+// foreground color: enough to read easily, while still looking dimmer than
+// active text.
+const readableDisabledMix = 0.6
+
+func (readableDisabledTheme) base() fyne.Theme {
+	if app := fyne.CurrentApp(); app != nil {
+		return app.Settings().Theme()
+	}
+	return theme.DefaultTheme()
+}
+
+func (t readableDisabledTheme) Color(n fyne.ThemeColorName, v fyne.ThemeVariant) color.Color {
+	base := t.base()
+	if n != theme.ColorNameDisabled {
+		return base.Color(n, v)
+	}
+	return mixColor(base.Color(n, v), base.Color(theme.ColorNameForeground, v), readableDisabledMix)
+}
+
+func (t readableDisabledTheme) Font(s fyne.TextStyle) fyne.Resource     { return t.base().Font(s) }
+func (t readableDisabledTheme) Icon(n fyne.ThemeIconName) fyne.Resource { return t.base().Icon(n) }
+func (t readableDisabledTheme) Size(n fyne.ThemeSizeName) float32       { return t.base().Size(n) }
+
+// mixColor returns a blended f of the way from a to b.
+func mixColor(a, b color.Color, f float64) color.Color {
+	ar, ag, ab, aa := a.RGBA()
+	br, bg, bb, ba := b.RGBA()
+	mix := func(x, y uint32) uint8 {
+		return uint8((float64(x)*(1-f) + float64(y)*f) / 0x101)
+	}
+	return color.NRGBA{R: mix(ar, br), G: mix(ag, bg), B: mix(ab, bb), A: mix(aa, ba)}
+}
