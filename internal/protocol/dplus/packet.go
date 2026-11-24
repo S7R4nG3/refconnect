@@ -147,6 +147,13 @@ func encodeVoice(streamID [2]byte, f dstar.DVFrame) []byte {
 	return pkt
 }
 
+// isDSVT reports whether buf is a DPlus DSVT data packet (voice or header),
+// as opposed to a control, keepalive or login packet.
+func isDSVT(buf []byte) bool {
+	return len(buf) >= 6 && buf[1] == dplusDataMarker &&
+		buf[2] == 'D' && buf[3] == 'S' && buf[4] == 'V' && buf[5] == 'T'
+}
+
 // parsePacket decodes a received DPlus DSVT packet.
 // The raw UDP packet (including the 2-byte prefix) is passed in.
 // A header with a wrong CRC is returned together with a *dstar.CRCError.
@@ -154,10 +161,7 @@ func parsePacket(buf []byte) (*dstar.DVHeader, *dstar.DVFrame, error) {
 	if len(buf) < 17 {
 		return nil, nil, nil
 	}
-	if buf[1] != dplusDataMarker {
-		return nil, nil, nil
-	}
-	if buf[2] != 'D' || buf[3] != 'S' || buf[4] != 'V' || buf[5] != 'T' {
+	if !isDSVT(buf) {
 		return nil, nil, nil
 	}
 
