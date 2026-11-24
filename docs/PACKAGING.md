@@ -42,10 +42,15 @@ Files installed: `/usr/bin/refconnect`, `/usr/share/applications/refconnect.desk
 * macOS / Windows unchanged.
 
 All Linux artifacts take their version from the tag (`VERSION=${GITHUB_REF_NAME#v}`).
-The binaries are built on Ubuntu 24.04 runners; as of v0.14.0 they need glibc
-2.38 or newer (Debian 13+, Ubuntu 24.04+, Fedora 39+). The CI log prints the
-computed floor for each build. The tarball and AppImage have the same floor;
-the AppImage does not bundle glibc or the GL/X11 libraries.
+The binaries are built on Ubuntu 22.04 runners (`ubuntu-22.04`,
+`ubuntu-22.04-arm`), so they need at most glibc 2.35 (Ubuntu 22.04+, Debian 12+,
+Fedora 36+). The CI log prints the computed floor for each build. The tarball
+and AppImage have the same floor; the AppImage does not bundle glibc or the
+GL/X11 libraries. Keep the build runners on the **oldest Ubuntu LTS still in
+standard support**: the [AppImage catalog](https://appimage.github.io) test runs
+there and rejects an AppImage that needs a newer glibc (v0.17.0, built on 24.04,
+failed with `GLIBC_2.38 not found`). Move up only when that LTS leaves standard
+support (22.04: April 2027).
 
 ## APT / DNF repositories (GitHub Pages)
 
@@ -93,15 +98,16 @@ and checks that refconnect stays up under Xvfb.
 
 * **Every PR** (`ci.yml`): `packaging/build-test-repo.sh` builds packages and a
   repo signed with a throwaway key. The repo is served on `localhost`, and the
-  install is tested on Ubuntu 24.04, Debian 13 and Fedora (latest), amd64 and
-  arm64, plus an upgrade from an older version on amd64. On Ubuntu 22.04 the
-  test expects the install to be **refused**, because glibc is below the floor.
+  install is tested on Ubuntu 22.04, Ubuntu 24.04, Debian 13 and Fedora
+  (latest), amd64 and arm64, plus an upgrade from an older version on amd64. On
+  Ubuntu 20.04 the test expects the install to be **refused**, because glibc is
+  below the floor.
 * **Every release** (`release.yml`, `verify-repos`): the same checks against
   the live Pages repo once it serves the new version. The upgrade runs start
   from the previous release's `.deb`/`.rpm`. They are skipped if that release
   has no packages.
 
-Run locally (Docker), after building `./refconnect` on Ubuntu 24.04:
+Run locally (Docker), after building `./refconnect` on Ubuntu 22.04:
 
 ```sh
 ARCH=arm64 sh packaging/build-test-repo.sh /tmp/t     # needs nfpm, apt-utils, createrepo-c

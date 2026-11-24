@@ -51,7 +51,7 @@ sudo dnf install refconnect
 
 The `.deb`, `.rpm` and `.AppImage` files are also attached to each [release](https://github.com/S7R4nG3/refconnect/releases).
 
-Linux builds need glibc 2.38+ (Debian 13+, Ubuntu 24.04+, Fedora 39+). Portable tarball fallback (`setup.sh` above) still works. See [docs/PACKAGING.md](docs/PACKAGING.md) for details.
+Linux builds need glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora 36+). Portable tarball fallback (`setup.sh` above) still works. See [docs/PACKAGING.md](docs/PACKAGING.md) for details.
 
 Check out the [Wiki](https://github.com/S7R4nG3/refconnect/wiki) for more information!
 

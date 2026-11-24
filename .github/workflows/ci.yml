@@ -48,8 +48,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, runner: ubuntu-latest }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
+          - { arch: amd64, runner: ubuntu-22.04 }
+          - { arch: arm64, runner: ubuntu-22.04-arm }
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +89,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['ubuntu:24.04', 'debian:13', 'fedora:latest']
+        # ubuntu:22.04 is the oldest supported LTS and the AppImage catalog's
+        # test system: the build runners use it so the binary runs there.
+        image: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:13', 'fedora:latest']
         arch: [amd64, arm64]
         mode: [fresh]
         include:
@@ -97,7 +99,7 @@ jobs:
           - { image: 'fedora:latest', arch: amd64, mode: upgrade }
           # Below the glibc floor: apt must refuse rather than install a
           # binary that cannot run.
-          - { image: 'ubuntu:22.04', arch: amd64, mode: refuse }
+          - { image: 'ubuntu:20.04', arch: amd64, mode: refuse }
     steps:
       - uses: actions/checkout@v4
 
