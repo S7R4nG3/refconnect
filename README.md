@@ -2,7 +2,7 @@
 
 # RefConnect
 
-A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STAR radio to internet-based reflectors via serial port. Supports DExtra (XRF), DPlus (REF), XLX, and DCS reflector protocols.
+A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STAR radio to internet-based reflectors via serial port. Supports DExtra (XRF), DPlus (REF), XLX, and DCS reflectors, and can link directly to a repeater's gateway.
 
 ![RefConnect Screenshot](docs/screenshot.png)
 
@@ -11,10 +11,13 @@ A D-STAR reflector client for macOS, Windows, and Linux that connects your D-STA
 ## Features
 
 - Multi-OS Support! (Linux/MacOS/Windows)
-- Connect to REF/XRF/XLX/DCS reflectors via DPlus/DExtra/XLX protocols
+- Connect to REF/XRF/XLX/DCS reflectors via the DPlus, DExtra and DCS protocols
+- Link straight to a repeater's gateway (DPlus, DExtra or DCS) with the Reflector ⟷ Repeater switch
 - Supports ICOM (DV Gateway Terminal) and Kenwood (MMDVM) radio protocols
-- Serial port integration with D-STAR radios via USB
-- Saved reflector profiles with last-used memory
+- Automatic radio detection — recognises the Icom IC-705, ID-52 and ID-52 PLUS and the Kenwood TH-D75, picks the right port and protocol
+- Optional APRS — forwards the GPS position from your radio's transmissions to APRS-IS and the reflector (D-PRS)
+- Saved profiles with friendly names, sorting (saved order, A–Z, most recent) and last-used memory
+- Checks for new releases on launch
 - Dark, light, or system theme support
 - Timestamped activity log
 
@@ -76,12 +79,20 @@ reflectors:
       port: 20001
       module: C
       protocol: DPlus
+      label: International      # optional friendly name
+    - name: W4ABC B             # a repeater profile
+      host: w4abc.example.org
+      port: 20001
+      module: B
+      protocol: DPlus
+      repeater_call: W4ABC
 last_used_reflector: "REF001 C"
 ui:
     theme: system                # "dark", "light", or "system"
     log_max_lines: 500
     window_width: 960
     window_height: 720
+    profile_sort: name           # "" (saved order), "name" or "recent"
 ```
 
 | Field | Description |
@@ -90,25 +101,35 @@ ui:
 | `callsign_suffix` | Gateway module suffix (e.g. `G` for gateway). This is the 8th character of your callsign as shown in Via/Peer on reflector dashboards |
 | `radio.port` | Serial port path for your radio |
 | `radio.protocol` | `DV-GW` for ICOM radios, `MMDVM` for Kenwood radios. Baud rate is set automatically (38400 / 115200) |
-| `reflectors` | Saved reflector profiles, selectable from the Connect panel |
+| `reflectors` | Saved reflector and repeater profiles, selectable from the Connect panel |
+| `reflectors[].label` | Optional friendly name shown in the Profile dropdown |
+| `reflectors[].repeater_call` | Set on repeater profiles — the repeater's callsign (no module) |
+| `last_used_reflector` | Profile reselected on the next launch |
+| `aprs.enabled` | Turn APRS position reporting on or off (also the **Enable APRS** checkbox) |
 | `ui.theme` | `dark`, `light`, or `system` |
+| `ui.profile_sort` | Profile dropdown order: saved order (empty), `name` (A–Z) or `recent` |
 
 ## Usage
 
 1. **Connect your radio** — Plug in your radio and turn it on. RefConnect detects supported radios, selects the right serial port and sets the protocol (ICOM or Kenwood) automatically; the hint under the port selector shows the radio's status. For a radio it doesn't recognise, select its port and choose the protocol yourself.
-2. **Select a reflector** — Choose a saved reflector profile from the Profile dropdown, or fill in Type/ID/Domain/Module to create a new one.
+2. **Select a reflector or repeater** — Use the **Reflector ⟷ Repeater** switch at the top of the Connect panel, then choose a saved profile from the Profile dropdown, or fill in the fields to create a new one.
 3. **Enter your callsign** — Set your callsign and gateway module suffix.
 4. **Click Connect** — The status panel will update once the link is established. The connected profile is remembered and reselected automatically on the next launch.
 5. **Transmit** — Key up on your radio! Welcome to D-STAR!
 
 The log panel shows timestamped activity including connections, heard callsigns, and errors.
 
-### Saving reflector profiles
+### Linking to a repeater
 
-The Connect panel keeps a list of saved profiles you can switch between via the **Profile** dropdown:
+Flip the switch at the top of the Connect panel to **Repeater** to link to a repeater's gateway instead of a reflector. Enter the repeater's callsign in the **Repeater** field, its gateway address in **Host**, pick the **Module**, and choose the **Protocol** (DPlus by default, or DExtra / DCS). The switch is locked while you're connected — disconnect first to change modes.
 
-- **Save profile** — captures the current Type, ID, Domain, and Module fields and writes the entry into `config.yaml` under `reflectors`. The profile name is derived from the form (e.g. `REF001 C`); saving with the same name overwrites the existing entry, otherwise a new one is appended.
+### Saving profiles
+
+The Connect panel keeps a list of saved profiles you can switch between via the **Profile** dropdown. Reflector and repeater profiles are listed separately — the dropdown shows the ones for the current mode, and each mode remembers its own selection.
+
+- **Save profile** — captures the current fields and writes the entry into `config.yaml` under `reflectors`. The profile is keyed by a name derived from the form (e.g. `REF001 C` or `W4ABC B`); saving with the same name overwrites the existing entry, otherwise a new one is appended. You'll be asked for an optional friendly name, shown in the dropdown as e.g. `International (REF001 C)`.
 - **Delete profile** — removes the currently selected entry from the dropdown and from `config.yaml`.
+- **Sort** — the buttons at the top right of the panel order the dropdown by saved order, A–Z, or most recently connected.
 - **Last used** — the most recent profile you connected to is stored in `last_used_reflector` and pre-selected on next launch.
 
 Because profiles live in `config.yaml`, you can migrate them between devices by copying that file. Callsign and gateway suffix are global and apply to every profile.
