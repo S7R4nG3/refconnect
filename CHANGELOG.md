@@ -1,3 +1,9 @@
+## v0.17.2 (2026-11-24)
+
+### Fix
+
+- **router**: drop RX traffic from other modules of the linked target
+
 ## v0.17.1 (2026-11-23)
 
 ### Fix
