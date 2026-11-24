@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,6 +63,13 @@ type ReflectorEntry struct {
 	// RepeaterCall is the repeater's callsign without module (e.g. "W4ABC").
 	// Empty for reflector entries.
 	RepeaterCall string `yaml:"repeater_call,omitempty"`
+
+	// Label is an optional friendly name shown in the profile list. Name stays
+	// the profile's key ("REF001 C", "W4ABC B").
+	Label string `yaml:"label,omitempty"`
+
+	// LastUsed is when the profile was last connected, for the "Recent" sort.
+	LastUsed time.Time `yaml:"last_used,omitempty"`
 }
 
 // UIConfig holds window and display preferences.
@@ -75,6 +83,8 @@ type UIConfig struct {
 	// layout is too large to fit. 0 means "auto" — let Fyne detect the
 	// display scale. Typical compact values are 0.6–0.8.
 	Scale float32 `yaml:"scale"`
+	// ProfileSort orders the saved-profile list: "" (saved order), "name" or "recent".
+	ProfileSort string `yaml:"profile_sort,omitempty"`
 }
 
 // LogDir returns the directory where timestamped log files are stored.
