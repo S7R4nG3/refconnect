@@ -87,6 +87,13 @@ type Config struct {
 	// none. It is called from the TX goroutine about once a second while
 	// transmitting.
 	DPRS func() (tnc2 string, ok bool)
+
+	// HidePosition, if set and true, keeps the station's position off the
+	// air: the radio's own GPS blocks are replaced with filler and DPRS is
+	// not embedded. The radio's GPS is still decoded into the GPS cache.
+	// It is read once per transmission, at the header, so toggling it
+	// mid-transmission can't leave a partial sentence.
+	HidePosition func() bool
 }
 
 // Router routes DV frames between a radio and a reflector.
@@ -137,6 +144,7 @@ type Router struct {
 	// txSlowData).
 	txTextSent   [4]bool   // which of our text blocks have been sent
 	txGPS        gpsSource // whose GPS data this transmission carries
+	txHidePos    bool      // Config.HidePosition, read at this transmission's header
 	txDPRS       [][6]byte // our DPRS sentence being sent, as blocks
 	txDPRSIdx    int       // next block of txDPRS to send
 	txDPRSLogged bool
@@ -306,6 +314,7 @@ func (rt *Router) txLoop() {
 			rt.slowDump = rt.slowDump[:0]
 			rt.gotFixThisTX = false
 			rt.txTextSent, rt.txGPS = [4]bool{}, gpsNone
+			rt.txHidePos = rt.cfg.HidePosition != nil && rt.cfg.HidePosition()
 			rt.txDPRS, rt.txDPRSIdx, rt.txDPRSLogged = nil, 0, false
 			rt.txPendingSeq = 0
 			rt.txFrameCount = 0
@@ -426,9 +435,11 @@ const (
 // TX message and GPS:
 //
 //   - the radio's text-message blocks are replaced by ours, block for block;
-//   - the radio's GPS blocks pass through unchanged, from the first frame;
+//   - the radio's GPS blocks pass through unchanged, from the first frame,
+//     unless the position is hidden (then they become filler);
 //   - idle blocks carry our text message (if not yet sent this transmission),
-//     then our DPRS position when the radio isn't sending GPS of its own;
+//     then our DPRS position when the radio isn't sending GPS of its own and
+//     the position isn't hidden;
 //   - anything else passes through.
 func (rt *Router) txSlowData(frm dstar.DVFrame) [3]byte {
 	seq := frm.Seq % (dstar.MaxSeq + 1)
@@ -465,6 +476,9 @@ func (rt *Router) txBlock(radioType byte) (block [6]byte, replace bool) {
 		rt.txTextSent[n] = true
 		return rt.txText[n], true
 	case dstar.BlockTypeGPS:
+		if rt.txHidePos {
+			return dstar.FillerBlock, true
+		}
 		if rt.txGPS == gpsOurs {
 			return dstar.FillerBlock, true // ours is in progress
 		}
@@ -479,7 +493,7 @@ func (rt *Router) txBlock(radioType byte) (block [6]byte, replace bool) {
 				}
 			}
 		}
-		if rt.txGPS != gpsRadio {
+		if rt.txGPS != gpsRadio && !rt.txHidePos {
 			if b, ok := rt.nextDPRSBlock(); ok {
 				rt.txGPS = gpsOurs
 				return b, true

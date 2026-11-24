@@ -410,7 +410,8 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 			a.cfg.Radio.Protocol = val
 		}
 	})
-	s.protoRow = container.NewGridWithColumns(2, widget.NewLabel("Protocol"), s.protoSelect)
+	s.protoRow = container.NewGridWithColumns(2, widget.NewLabel("Protocol"),
+		container.NewThemeOverride(s.protoSelect, readableDisabledTheme{}))
 	s.protoRow.Hide()
 
 	// Start with a placeholder; enumerate ports in the background so
@@ -446,7 +447,10 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		s.updateHint()
 	}))
 
-	portRow := container.NewBorder(nil, nil, nil, refreshBtn, s.portSelect)
+	// The port and hint stay readable while locked so the user can still see
+	// which radio is in use; the refresh button keeps the normal dimmed look.
+	portRow := container.NewBorder(nil, nil, nil, refreshBtn,
+		container.NewThemeOverride(s.portSelect, readableDisabledTheme{}))
 
 	helpLink := widget.NewHyperlink("Need help? Check the docs!",
 		parseURL("https://github.com/S7R4nG3/refconnect/wiki/Connecting-Radios"))
@@ -457,7 +461,7 @@ func buildPTTPanel(a *App) fyne.CanvasObject {
 		widget.NewLabel("Radio"),
 		portRow,
 		s.protoRow,
-		hint,
+		container.NewThemeOverride(hint, readableDisabledTheme{}),
 		container.NewBorder(nil, nil, aprsCheck, helpLink),
 	)
 }
