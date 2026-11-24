@@ -11,9 +11,10 @@ import (
 
 // toggleSwitch is a minimal iOS-style on/off switch: a pill-shaped track with
 // a circular thumb that slides between the two ends when tapped. Fyne v2.7
-// doesn't ship one, so we draw it with canvas primitives.
+// doesn't ship one, so we draw it with canvas primitives. A disabled switch
+// is dimmed and ignores taps.
 type toggleSwitch struct {
-	widget.BaseWidget
+	widget.DisableableWidget
 
 	checked   bool
 	onChanged func(bool)
@@ -26,6 +27,9 @@ func newToggleSwitch(checked bool, onChanged func(bool)) *toggleSwitch {
 }
 
 func (t *toggleSwitch) Tapped(_ *fyne.PointEvent) {
+	if t.Disabled() {
+		return
+	}
 	t.checked = !t.checked
 	t.Refresh()
 	if t.onChanged != nil {
@@ -101,6 +105,11 @@ func (r *toggleSwitchRenderer) Refresh() {
 }
 
 func (r *toggleSwitchRenderer) applyColors() {
+	if r.toggle.Disabled() {
+		r.track.FillColor = theme.Color(theme.ColorNameDisabledButton)
+		r.thumb.FillColor = theme.Color(theme.ColorNameDisabled)
+		return
+	}
 	if r.toggle.checked {
 		r.track.FillColor = theme.Color(theme.ColorNamePrimary)
 		r.thumb.FillColor = color.White

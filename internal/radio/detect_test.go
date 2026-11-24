@@ -21,6 +21,7 @@ func TestClassify(t *testing.T) {
 		{"IC-705 CI-V", DetectedPort{IsUSB: true, VID: "0C26", PID: "0036"}, 0, "Icom IC-705", ProtocolDVGateway, RoleCIV},
 		{"IC-705 unknown iface", DetectedPort{IsUSB: true, VID: "0C26", PID: "0036"}, -1, "Icom IC-705", ProtocolDVGateway, ""},
 		{"ID-52", DetectedPort{IsUSB: true, VID: "0C26", PID: "003A"}, 0, "Icom ID-52", ProtocolDVGateway, ""},
+		{"ID-52 PLUS", DetectedPort{IsUSB: true, VID: "0C26", PID: "004C"}, 0, "Icom ID-52 PLUS", ProtocolDVGateway, ""},
 		{"TH-D75", DetectedPort{IsUSB: true, VID: "2166", PID: "9023"}, 0, "Kenwood TH-D75", ProtocolMMDVM, ""},
 		{"unknown Icom", DetectedPort{IsUSB: true, VID: "0C26", PID: "0099"}, -1, "Icom radio", ProtocolDVGateway, ""},
 		// The IC-9700's gateway runs over its DATA jack, not USB.

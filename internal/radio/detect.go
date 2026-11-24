@@ -102,11 +102,12 @@ var knownRadios = []knownRadio{
 	{vid: "0C26", pid: "0036", model: "Icom IC-705", protocol: ProtocolDVGateway,
 		roles: map[int]string{0: RoleCIV, 2: RoleDVData}},
 	{vid: "0C26", pid: "003A", model: "Icom ID-52", protocol: ProtocolDVGateway},
+	{vid: "0C26", pid: "004C", model: "Icom ID-52 PLUS", protocol: ProtocolDVGateway},
 	{vid: "2166", pid: "9023", model: "Kenwood TH-D75", protocol: ProtocolMMDVM},
 }
 
 // knownVendors catches newer models from the same manufacturer whose PIDs
-// are not yet in knownRadios (IC-905, ID-50, ID-52 PLUS, …).
+// are not yet in knownRadios (IC-905, ID-50, …).
 var knownVendors = map[string]knownRadio{
 	"0C26": {model: "Icom radio", protocol: ProtocolDVGateway},
 	"2166": {model: "Kenwood radio", protocol: ProtocolMMDVM},
