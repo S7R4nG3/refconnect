@@ -9,8 +9,8 @@ pkgdesc="D-STAR reflector client (REF/XRF/XLX/DCS) — git version"
 arch=('x86_64' 'aarch64')
 url="https://github.com/S7R4nG3/refconnect"
 license=('MIT')
-depends=('libgl' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libxxf86vm' 'wayland' 'libxkbcommon')
-makedepends=('git' 'go' 'xorgproto' 'wayland-protocols')
+depends=('libgl' 'libx11' 'libxcursor' 'libxrandr' 'libxi' 'libxxf86vm' 'wayland' 'libxkbcommon' 'hicolor-icon-theme')
+makedepends=('git' 'go' 'xorgproto' 'wayland-protocols' 'libxinerama')
 provides=('refconnect')
 conflicts=('refconnect' 'refconnect-bin')
 source=("${pkgname}::git+https://github.com/S7R4nG3/refconnect.git")
@@ -18,13 +18,26 @@ sha256sums=('SKIP')
 
 pkgver() {
   cd "${pkgname}"
-  git describe --long --tags 2>/dev/null | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' || echo "${pkgver}"
+  git describe --long --tags --abbrev=7 | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
 }
 
+prepare() {
+  cd "${pkgname}"
+  export GOPATH="${srcdir}/gopath"
+  go mod download -modcacherw
+}
+
+# Flags follow https://wiki.archlinux.org/title/Go_package_guidelines
 build() {
   cd "${pkgname}"
-  export CGO_ENABLED=1 GOFLAGS="-mod=readonly"
-  go build -ldflags="-s -w" -o refconnect .
+  export GOPATH="${srcdir}/gopath"
+  export CGO_ENABLED=1
+  export CGO_CPPFLAGS="${CPPFLAGS}"
+  export CGO_CFLAGS="${CFLAGS}"
+  export CGO_CXXFLAGS="${CXXFLAGS}"
+  export CGO_LDFLAGS="${LDFLAGS}"
+  export GOFLAGS="-buildmode=pie -trimpath -ldflags=-linkmode=external -mod=readonly -modcacherw"
+  go build -o refconnect .
 }
 
 package() {

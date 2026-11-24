@@ -14,6 +14,7 @@ pkgbase = refconnect-bin
 	depends = libxxf86vm
 	depends = wayland
 	depends = libxkbcommon
+	depends = hicolor-icon-theme
 	provides = refconnect
 	conflicts = refconnect
 	conflicts = refconnect-git
