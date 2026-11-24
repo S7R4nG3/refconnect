@@ -3,6 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+    # Skip commitizen bump commits, which only touch these files. A push that
+    # also carries other changes still runs (the filter sees the whole push).
+    # Release builds run from the tag in release.yml.
+    paths-ignore:
+      - .cz.yaml
+      - CHANGELOG.md
+      - version.json
   pull_request:
     branches: [main]
 
