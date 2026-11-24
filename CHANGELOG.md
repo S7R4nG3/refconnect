@@ -1,3 +1,10 @@
+## v0.17.3 (2026-11-24)
+
+### Fix
+
+- keep position off the air with APRS disabled; brighten locked radio text
+- **ci**: skip the CI workflow for bump-only pushes to main
+
 ## v0.17.2 (2026-11-24)
 
 ### Fix
