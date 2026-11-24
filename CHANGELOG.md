@@ -1,3 +1,14 @@
+## v0.17.0 (2026-11-23)
+
+### Feat
+
+- **radio**: detect the Icom ID-52 PLUS by USB ID
+- **ui**: friendly profile names, per-mode profile lists and sort buttons
+
+### Fix
+
+- **dplus**: skip gateway voice traffic while waiting for the login ACK
+
 ## v0.16.1 (2026-11-22)
 
 ### Fix
