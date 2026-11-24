@@ -1,3 +1,9 @@
+## v0.17.1 (2026-11-23)
+
+### Fix
+
+- **ci**: build Linux artifacts on Ubuntu 22.04 for the AppImage glibc floor
+
 ## v0.17.0 (2026-11-23)
 
 ### Feat
