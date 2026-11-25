@@ -3,7 +3,7 @@ module github.com/S7R4nG3/refconnect
 go 1.26.0
 
 require (
-	fyne.io/fyne/v2 v2.8.2
+	fyne.io/fyne/v2 v2.8.3
 	github.com/godbus/dbus/v5 v5.2.4
 	go.bug.st/serial v1.8.0
 	golang.org/x/sys v0.50.0
